@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Static Collective Codex",
+  "description": "An interactive dashboard and chatbot codex for managing the 19-album universe and branching ideas of The Static Collective.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
