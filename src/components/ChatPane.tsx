@@ -8,6 +8,13 @@ interface ChatPaneProps {
   onClearChat: () => void;
   isGenerating: boolean;
   error: string | null;
+  telemetry?: {
+    similarity: number;
+    drift: number;
+    classification: string;
+    status: string;
+    color: string;
+  } | null;
 }
 
 export default function ChatPane({
@@ -15,7 +22,8 @@ export default function ChatPane({
   onSendMessage,
   onClearChat,
   isGenerating,
-  error
+  error,
+  telemetry
 }: ChatPaneProps) {
   const [input, setInput] = useState("");
   const [selectedModel, setSelectedModel] = useState("gemini-3.5-flash");
@@ -111,6 +119,38 @@ export default function ChatPane({
           {messages.length >= 11 ? "🫗 Pouring near" : "Stay Soft"}
         </span>
       </div>
+
+      {/* T5 Alignment Telemetry Monitor */}
+      {telemetry && (
+        <div className="bg-[#1a1c1d] px-4 py-2 border-b border-[#E4E3E0]/15 flex flex-col gap-1.5 text-[9px] font-mono uppercase text-[#E4E3E0]/80">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: telemetry.color }} />
+              <span className="font-bold text-[#E4E3E0]">T5 Alignment Monitor:</span>
+              <span style={{ color: telemetry.color }} className="font-bold">{(telemetry.similarity || 0.82).toFixed(4)}</span>
+            </div>
+            <div className="text-[#E4E3E0]/60">
+              Drift: <span className="font-bold text-[#E4E3E0]">{(telemetry.drift || 0.18).toFixed(4)}</span>
+            </div>
+          </div>
+          
+          {/* Progress bar gauge */}
+          <div className="w-full h-1.5 bg-stone-800 border border-stone-700 relative">
+            {/* Center target zone [0.75 - 0.93] */}
+            <div className="absolute top-0 bottom-0 left-[37.5%] right-[17.5%] bg-emerald-500/20 border-l border-r border-emerald-400/50" />
+            
+            {/* Needle indicator */}
+            <div 
+              className="absolute top-0 bottom-0 w-1 bg-[#F27D26] shadow-[0_0_4px_#F27D26]" 
+              style={{ left: `${Math.max(0, Math.min(100, (((telemetry.similarity || 0.82) - 0.60) * 250)))}%` }}
+            />
+          </div>
+          
+          <div className="text-[8px] truncate leading-none mt-0.5" style={{ color: telemetry.color }}>
+            {telemetry.status}
+          </div>
+        </div>
+      )}
 
       {/* Message Feed */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-[#E4E3E0]">

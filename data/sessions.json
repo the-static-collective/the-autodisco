@@ -1,0 +1,35 @@
+[
+  {
+    "id": "session_1",
+    "title": "Opening the absolute E E drone",
+    "timestamp": "2026-07-16T14:00:00.000Z",
+    "key": "E",
+    "scale": "dorian",
+    "bpm": 84,
+    "description": "Grounding in the 022100 absolute frequency. Chords lift from E minor to A major, mimicking the long road to Ararat.",
+    "composition": {
+      "key": "E",
+      "scale": "dorian",
+      "bpm": 84,
+      "chords": [
+        { "notes": [52, 59, 64, 67], "time": 0, "duration": 4 },
+        { "notes": [52, 57, 61, 66], "time": 4, "duration": 4 },
+        { "notes": [52, 59, 64, 67], "time": 8, "duration": 4 },
+        { "notes": [52, 57, 61, 66], "time": 12, "duration": 4 }
+      ],
+      "melody": [
+        { "midi": 64, "time": 0, "duration": 1 },
+        { "midi": 66, "time": 1, "duration": 1 },
+        { "midi": 67, "time": 2, "duration": 2 },
+        { "midi": 69, "time": 4, "duration": 1 },
+        { "midi": 67, "time": 5, "duration": 1 },
+        { "midi": 66, "time": 6, "duration": 2 },
+        { "midi": 64, "time": 8, "duration": 1 },
+        { "midi": 66, "time": 9, "duration": 1 },
+        { "midi": 67, "time": 10, "duration": 2 },
+        { "midi": 71, "time": 12, "duration": 2 },
+        { "midi": 69, "time": 14, "duration": 2 }
+      ]
+    }
+  }
+]

@@ -1,0 +1,92 @@
+{
+  "scales": [
+    {
+      "id": "major",
+      "name": "Major (Ionian)",
+      "formula": "W-W-H-W-W-W-H",
+      "intervals": [0, 2, 4, 5, 7, 9, 11, 12],
+      "poetic_definition": "The clear light of mid-morning. It declares space, sets the table, and leaves no doubt that the ground is dry beneath your boots."
+    },
+    {
+      "id": "minor",
+      "name": "Natural Minor (Aeolian)",
+      "formula": "W-H-W-W-H-W-W",
+      "intervals": [0, 2, 3, 5, 7, 8, 10, 12],
+      "poetic_definition": "The soil at dusk. A heavy, quiet moisture that remembers everything we buried in the spring."
+    },
+    {
+      "id": "dorian",
+      "name": "Dorian Mode",
+      "formula": "W-H-W-W-W-H-W",
+      "intervals": [0, 2, 3, 5, 7, 9, 10, 12],
+      "poetic_definition": "A wandering, hopeful shadow. The sixth degree rises like a warm chimney smoke in a cold mountain pass."
+    },
+    {
+      "id": "phrygian",
+      "name": "Phrygian Mode",
+      "formula": "H-W-W-W-H-W-W",
+      "intervals": [0, 1, 3, 5, 7, 8, 10, 12],
+      "poetic_definition": "Feral, dry prairie wind. The immediate half-step descent feels like stepping off a sudden ledge into the gulch."
+    }
+  ],
+  "chords": [
+    {
+      "id": "maj_triad",
+      "name": "Major Triad",
+      "formula": "Root - Major 3rd - Perfect 5th",
+      "semitones": [0, 4, 7],
+      "poetic_definition": "The structural frame. Like three heavy oak beams supporting a kitchen ceiling. Sturdy, warm, and resting on rock."
+    },
+    {
+      "id": "min_triad",
+      "name": "Minor Triad",
+      "formula": "Root - Minor 3rd - Perfect 5th",
+      "semitones": [0, 3, 7],
+      "poetic_definition": "An interior reflection. The window pane after the rain, where the light is grey and the room is quiet."
+    },
+    {
+      "id": "dom_seven",
+      "name": "Dominant Seventh",
+      "formula": "Root - Major 3rd - Perfect 5th - Minor 7th",
+      "semitones": [0, 4, 7, 10],
+      "poetic_definition": "A restless traveler. The tritone inside it demands a gate to open; it refuses to sleep until it finds the home key."
+    },
+    {
+      "id": "maj_seven",
+      "name": "Major Seventh",
+      "formula": "Root - Major 3rd - Perfect 5th - Major 7th",
+      "semitones": [0, 4, 7, 11],
+      "poetic_definition": "A sweet, lingering ache. The seventh floats just beneath the octave, a bird hovering in the warm thermal before the cold night."
+    }
+  ],
+  "intervals": [
+    {
+      "id": "perf_fifth",
+      "name": "Perfect Fifth",
+      "ratio": "3:2",
+      "semitones": 7,
+      "poetic_definition": "The unshakeable horizon. The interval that does not argue; it simply is. It provides the absolute base frequency for all lineages."
+    },
+    {
+      "id": "min_third",
+      "name": "Minor Third",
+      "ratio": "6:5",
+      "semitones": 3,
+      "poetic_definition": "A soft surrender. Moving inward, admitting that we do not have all the answers but are willing to sit in the shade."
+    },
+    {
+      "id": "tritone",
+      "name": "Tritone (Augmented 4th)",
+      "ratio": "45:32",
+      "semitones": 6,
+      "poetic_definition": "The split rail fence. An unstable boundary that vibrates with electric charge. It is the exact seam where the system breaks open."
+    },
+    {
+      "id": "perf_fourth",
+      "name": "Perfect Fourth",
+      "ratio": "4:3",
+      "semitones": 5,
+      "poetic_definition": "The unfinished archway. It lifts the ear upward, promising a room it has not yet built."
+    }
+  ]
+}

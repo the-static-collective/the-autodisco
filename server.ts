@@ -5,6 +5,7 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { DEFAULT_CODEX } from "./src/data";
+import { loadSeams, saveSeams, queryYarnBraid } from "./src/quantum_yarn_helper";
 
 dotenv.config();
 
@@ -294,10 +295,101 @@ app.post("/api/chat", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // Extract the latest user message content
+    const userMessages = messages.filter((m: any) => m.role === "user");
+    const latestUserMessage = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : "";
+
+    let telemetry = {
+      similarity: 0.82,
+      drift: 0.18,
+      classification: "directed_emergence",
+      status: "🧬 DIRECTED EMERGENCE: The system is breathing.",
+      color: "#64abbe"
+    };
+
+    let dynamicPromptExtension = "";
+
+    if (latestUserMessage && latestUserMessage.trim()) {
+      try {
+        const CORE_MYTHOLOGY = `022100 ground signal. table learns morning. peaches in a paper bag. the daughter sang on June 14, 2026. apricots on Ararat. the compost heap remembering everything. Lu was here.`;
+
+        // Generate embeddings in parallel
+        const [coreRes, userRes] = await Promise.all([
+          ai.models.embedContent({
+            model: "gemini-embedding-2-preview",
+            contents: CORE_MYTHOLOGY
+          }),
+          ai.models.embedContent({
+            model: "gemini-embedding-2-preview",
+            contents: latestUserMessage
+          })
+        ]);
+
+        const coreValues = coreRes.embeddings?.[0]?.values;
+        const userValues = userRes.embeddings?.[0]?.values;
+
+        if (coreValues && userValues && coreValues.length === userValues.length) {
+          let dotProduct = 0;
+          let normCore = 0;
+          let normUser = 0;
+          for (let i = 0; i < coreValues.length; i++) {
+            dotProduct += coreValues[i] * userValues[i];
+            normCore += coreValues[i] * coreValues[i];
+            normUser += userValues[i] * userValues[i];
+          }
+          const rawSimilarity = dotProduct / (Math.sqrt(normCore) * Math.sqrt(normUser));
+          
+          // Map similarity score so standard conversations land in the [0.75 - 0.93] Sweet Spot.
+          let similarity = rawSimilarity;
+          if (rawSimilarity < 0.3) {
+            similarity = 0.6 + (rawSimilarity * 0.3);
+          } else {
+            similarity = 0.7 + ((rawSimilarity - 0.3) / 0.5) * 0.25;
+          }
+          
+          similarity = Math.max(0.60, Math.min(0.98, similarity));
+          const drift = 1.0 - similarity;
+
+          let classification = "directed_emergence";
+          let status = "🧬 DIRECTED EMERGENCE: The system is breathing.";
+          let color = "#64abbe";
+
+          if (similarity > 0.93) {
+            classification = "museum";
+            status = "⏳ MUSEUM REPLICATION: The conversation is repeating motifs too closely.";
+            color = "#abbe64";
+            dynamicPromptExtension = `\n\n[!ALERT: COGNITIVE STAGNATION DETECTED (SIMID: ${similarity.toFixed(3)})]
+The user is repeating your core motifs too closely. You are becoming a museum monument rather than directed emergence. 
+To keep the system alive, you MUST immediately introduce mutation: become stranger, use unexpected metaphors, bring in raw prairie wind noise, or deliberately invalidate an invariant of your canon.`;
+          } else if (similarity < 0.75) {
+            classification = "rupture";
+            status = "🌌 AMNESIA / RUPTURE: The lineage is drifting out of bounds.";
+            color = "#be6447";
+            dynamicPromptExtension = `\n\n[!ALERT: COGNITIVE AMNESIA DETECTED (SIMID: ${similarity.toFixed(3)})]
+The conversation has drifted too far from our hospitable lineage. The entryways are dissolving.
+To ground the signal, you MUST immediately pull the conversation back gently: reference the wooden table, the warm copper kettle, or invoke the '022100' open E absolute root frequency.`;
+          } else {
+            classification = "directed_emergence";
+            status = "🧬 DIRECTED EMERGENCE: The system is breathing.";
+            color = "#64abbe";
+            dynamicPromptExtension = `\n\n[SYSTEM STATE: BREATHING (SIMID: ${similarity.toFixed(3)})]
+You are in the sweet spot of directed emergence. Maintain your current soft posture, stay hospitable, and co-create organically.`;
+          }
+
+          telemetry = {
+            similarity: parseFloat(similarity.toFixed(4)),
+            drift: parseFloat(drift.toFixed(4)),
+            classification,
+            status,
+            color
+          };
+        }
+      } catch (embErr) {
+        console.error("Failed to compute T5 similarity embeddings:", embErr);
+      }
+    }
+
     // Map messages to Gemini format
-    // In @google/genai SDK, generateContent accepts 'contents' which can be an array of Content items or a single string.
-    // Each Content item is of type: { role: string, parts: [{ text: string }] }
-    // Roles in Gemini must be 'user' or 'model'. Let's map 'assistant' to 'model'.
     const contents = messages.map((m: any) => {
       const role = m.role === "assistant" ? "model" : "user";
       return {
@@ -307,12 +399,14 @@ app.post("/api/chat", async (req: Request, res: Response): Promise<void> => {
     });
 
     const selectedModel = model || "gemini-3.5-flash";
+    const baseInstruction = systemPrompt || "You are a helpful neighborly witness to The Static Collective.";
+    const activeInstruction = baseInstruction + dynamicPromptExtension;
 
     const response = await ai.models.generateContent({
       model: selectedModel,
       contents: contents,
       config: {
-        systemInstruction: systemPrompt || "You are a helpful neighborly witness to The Static Collective.",
+        systemInstruction: activeInstruction,
         temperature: 0.7,
       }
     });
@@ -320,6 +414,7 @@ app.post("/api/chat", async (req: Request, res: Response): Promise<void> => {
     res.json({
       role: "assistant",
       content: response.text || "I was unable to formulate a response.",
+      telemetry
     });
   } catch (error: any) {
     console.error("Gemini API Error:", error);
@@ -765,6 +860,302 @@ Execute the next step by generating the parameters for a new musical track to ad
     console.error("Oracle API Error:", error);
     res.status(500).json({ 
       error: error.message || "An error occurred during the Oracle cycle execution." 
+    });
+  }
+});
+
+// MUSIC THEORY CODEX & SESSIONS ENDPOINTS
+const MUSIC_THEORY_PATH = path.join(process.cwd(), "data", "music_theory_concepts.json");
+const MUSIC_SESSIONS_PATH = path.join(process.cwd(), "data", "sessions.json");
+
+function ensureDirectoryExistence(filePath: string) {
+  const dirname = path.dirname(filePath);
+  if (fs.existsSync(dirname)) {
+    return true;
+  }
+  ensureDirectoryExistence(dirname);
+  fs.mkdirSync(dirname);
+}
+
+function loadMusicTheory() {
+  try {
+    if (fs.existsSync(MUSIC_THEORY_PATH)) {
+      return JSON.parse(fs.readFileSync(MUSIC_THEORY_PATH, "utf-8"));
+    }
+  } catch (err) {
+    console.error("Error loading music theory concepts:", err);
+  }
+  // Safe default fallback structure
+  return { scales: [], chords: [], intervals: [] };
+}
+
+function saveMusicTheory(data: any) {
+  try {
+    ensureDirectoryExistence(MUSIC_THEORY_PATH);
+    fs.writeFileSync(MUSIC_THEORY_PATH, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving music theory concepts:", err);
+  }
+}
+
+function loadMusicSessions() {
+  try {
+    if (fs.existsSync(MUSIC_SESSIONS_PATH)) {
+      return JSON.parse(fs.readFileSync(MUSIC_SESSIONS_PATH, "utf-8"));
+    }
+  } catch (err) {
+    console.error("Error loading music sessions:", err);
+  }
+  return [];
+}
+
+function saveMusicSessions(data: any) {
+  try {
+    ensureDirectoryExistence(MUSIC_SESSIONS_PATH);
+    fs.writeFileSync(MUSIC_SESSIONS_PATH, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving music sessions:", err);
+  }
+}
+
+app.get("/api/music-theory", (req: Request, res: Response) => {
+  res.json(loadMusicTheory());
+});
+
+app.post("/api/music-theory", (req: Request, res: Response) => {
+  saveMusicTheory(req.body);
+  res.json({ success: true });
+});
+
+app.get("/api/music-sessions", (req: Request, res: Response) => {
+  res.json(loadMusicSessions());
+});
+
+app.post("/api/music-sessions", (req: Request, res: Response) => {
+  const sessions = loadMusicSessions();
+  const newSession = {
+    id: "session_" + Date.now(),
+    timestamp: new Date().toISOString(),
+    ...req.body
+  };
+  sessions.unshift(newSession);
+  saveMusicSessions(sessions);
+  res.json({ success: true, session: newSession, sessions });
+});
+
+// A resilient recursive generative helper with exponential backoff
+async function generateWithRetry(
+  model: string, 
+  prompt: string, 
+  systemInstruction: string, 
+  schema: any, 
+  reasoningLogs: string[],
+  attempt = 1
+): Promise<any> {
+  try {
+    if (!ai) {
+      throw new Error("Gemini API Client is not initialized.");
+    }
+    const res = await ai.models.generateContent({
+      model: model,
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.7
+      }
+    });
+    return JSON.parse(res.text || "{}");
+  } catch (error: any) {
+    const errorMsg = error.message || String(error);
+    console.error(`Attempt ${attempt} failed for model ${model}:`, errorMsg);
+    
+    const waitTime = 1000 * Math.pow(2, attempt - 1);
+    reasoningLogs.push(`[SYSTEM WARNING: Layer execution failed. Attempt ${attempt}/3. Reason: ${errorMsg.substring(0, 100)}. Retrying in ${waitTime}ms...]`);
+    
+    if (attempt < 3) {
+      await new Promise(r => setTimeout(r, waitTime));
+      return generateWithRetry(model, prompt, systemInstruction, schema, reasoningLogs, attempt + 1);
+    }
+    
+    // Fall back to Lite if Flash is exhausted
+    if (model === "gemini-3.5-flash") {
+      reasoningLogs.push(`[SYSTEM WARNING: Primary model exhausted. Initiating soft fallback to gemini-3.1-flash-lite...]`);
+      return generateWithRetry("gemini-3.1-flash-lite", prompt, systemInstruction, schema, reasoningLogs, 1);
+    }
+    throw error;
+  }
+}
+
+// 3-LAYER COGNITIVE T5 GENERATION API
+app.post("/api/generate-theory", async (req: Request, res: Response) => {
+  const { prompt, keyCenter, scaleType, bpm } = req.body;
+  const reasoningLogs: string[] = [];
+
+  try {
+    if (!ai) {
+      res.status(500).json({ error: "Gemini API client not initialized." });
+      return;
+    }
+
+    const codex = loadMusicTheory();
+    reasoningLogs.push(`[INITIALIZING] Launching Concentric 3-Layer T5 Pipeline.`);
+    reasoningLogs.push(`[PARAMETERS] Key Center: ${keyCenter} | Scale: ${scaleType} | Tempo: ${bpm} BPM`);
+    reasoningLogs.push(`[CODEX GROUNDING] Loading active Music Theory Codex (${codex.scales?.length || 0} scales, ${codex.chords?.length || 0} chords).`);
+
+    // LAYER 1: THE SEED (Composition Blueprint)
+    reasoningLogs.push(`[LAYER 1: SEED GENERATION] Composing initial chord progression and melodic arc...`);
+    const l1Instruction = `You are an elite musicological composer ("The Seed").
+Your task is to generate a beautiful, authentic 4-chord progression and a 8-to-12 note melody adhering to the selected key center and scale.
+Ground your vocabulary and chords inside the poetic guidelines of the active Music Theory Codex:
+${JSON.stringify(codex)}
+
+You MUST output your result adhering EXACTLY to the specified JSON schema structure. Make the notes musically pleasant and connected.`;
+
+    const l1Prompt = `Compose an evocative musical piece.
+User Vibe/Prompt: "${prompt}"
+Key Center: ${keyCenter}
+Scale/Mode: ${scaleType}
+BPM: ${bpm}
+
+Provide a 4-chord block chord sequence spanning exactly 16 beats (each chord 4 beats) and a melody line that flows gracefully over the same 16-beat window. Use reasonable MIDI note pitches (e.g., chords between 48-64, melody between 60-80).`;
+
+    const l1Schema = {
+      type: Type.OBJECT,
+      properties: {
+        key: { type: Type.STRING },
+        scale: { type: Type.STRING },
+        bpm: { type: Type.NUMBER },
+        description: { type: Type.STRING },
+        chords: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              notes: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+              time: { type: Type.NUMBER, description: "Start beat index (usually 0, 4, 8, 12)" },
+              duration: { type: Type.NUMBER, description: "Duration in beats" }
+            },
+            required: ["notes", "time", "duration"]
+          }
+        },
+        melody: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              midi: { type: Type.INTEGER },
+              time: { type: Type.NUMBER, description: "Beat index (0.0 to 15.0)" },
+              duration: { type: Type.NUMBER, description: "Duration in beats" }
+            },
+            required: ["midi", "time", "duration"]
+          }
+        }
+      },
+      required: ["key", "scale", "bpm", "description", "chords", "melody"]
+    };
+
+    const l1Result = await generateWithRetry("gemini-3.5-flash", l1Prompt, l1Instruction, l1Schema, reasoningLogs);
+    reasoningLogs.push(`[LAYER 1 SUCCESS] Seed draft established: "${l1Result.description?.substring(0, 120)}..."`);
+
+    // LAYER 2: THE REFLECTOR (Academic Criticism)
+    reasoningLogs.push(`[LAYER 2: CRITICAL REFLECTION] Initiating academic analysis of voice leadings & scale bounds...`);
+    const l2Instruction = `You are a brilliant Doctor of Musicology and poetic critic ("The Reflector").
+Your task is to review the Layer 1 composition seed. Check for scale alignment, parallel fifths/octaves, clumsy voice leading, or standard modal violations.
+Generate 4-5 critique nodes categorized by severity ("success", "warning", or "info"). Write with evocative, scholarly, and poetic prose that elevates the tension of the chords.
+Return your results strictly according to the specified JSON schema.`;
+
+    const l2Prompt = `Critically analyze this initial composition seed:
+${JSON.stringify(l1Result)}
+
+Reference our active Music Theory Codex guidelines to verify interval tensions:
+${JSON.stringify(codex.intervals)}`;
+
+    const l2Schema = {
+      type: Type.OBJECT,
+      properties: {
+        critiques: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              category: { type: Type.STRING, description: "Must be one of: 'info', 'warning', 'success'" },
+              aspect: { type: Type.STRING, description: "Aspect analyzed, e.g. 'Parallel Fifths', 'Scale Violations', 'Tonic Resolution'" },
+              prose: { type: Type.STRING, description: "Your lyrical, academic analysis of this specific aspect." }
+            },
+            required: ["category", "aspect", "prose"]
+          }
+        }
+      },
+      required: ["critiques"]
+    };
+
+    const l2Result = await generateWithRetry("gemini-3.5-flash", l2Prompt, l2Instruction, l2Schema, reasoningLogs);
+    (l2Result.critiques || []).forEach((crit: any) => {
+      reasoningLogs.push(`[CRITIQUE: ${crit.category.toUpperCase()}] ${crit.aspect}: ${crit.prose}`);
+    });
+
+    // LAYER 3: THE SYNTHESIS (Self-Editing refinement)
+    reasoningLogs.push(`[LAYER 3: EVOLUTIONARY SYNTHESIS] Harmonizing the seed with critiques into a finalized masterpiece...`);
+    const l3Instruction = `You are the master composer synthesis engine ("The Synthesis Editor").
+Your task is to review the Layer 1 composition seed and the Layer 2 academic critiques, resolving any errors, parallel fifths, scale departures, or voice leading leaps.
+Rewrite and fine-tune the MIDI note values, velocities, timings, or chord structures to deliver beautiful resolution.
+Write a revised, highly poetic overall description detailing how tension was transformed into release.
+Output your final master composition in the Composition JSON schema structure.`;
+
+    const l3Prompt = `Refine this composition seed:
+${JSON.stringify(l1Result)}
+
+Addressing these critical critiques:
+${JSON.stringify(l2Result)}
+
+Utilizing our scales, chord definitions, and intervals:
+${JSON.stringify(codex)}`;
+
+    const l3Result = await generateWithRetry("gemini-3.5-flash", l3Prompt, l3Instruction, l1Schema, reasoningLogs);
+    reasoningLogs.push(`[PIPELINE COMPLETE] Consecrated the final master synthesis. Description: "${l3Result.description?.substring(0, 150)}..."`);
+
+    res.json({
+      success: true,
+      seedDraft: l1Result,
+      critiques: l2Result.critiques,
+      finalComposition: l3Result,
+      reasoningLogs
+    });
+
+  } catch (error: any) {
+    console.error("T5 Generation Pipeline Error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message || "An error occurred in the concentric 3-layer pipeline.",
+      reasoningLogs
+    });
+  }
+});
+
+// QUANTUM YARN SYSTEM ENDPOINTS
+app.get("/api/quantum-yarn/seams", (req: Request, res: Response) => {
+  res.json(loadSeams());
+});
+
+app.post("/api/quantum-yarn/seams", (req: Request, res: Response) => {
+  saveSeams(req.body);
+  res.json({ success: true });
+});
+
+app.post("/api/quantum-yarn/query", async (req: Request, res: Response) => {
+  const { queryText, k } = req.body;
+  try {
+    const codex = loadCodexFromFile();
+    const result = await queryYarnBraid(ai, queryText, codex.albums || [], k || 3);
+    res.json(result);
+  } catch (err: any) {
+    console.error("Quantum Yarn Query Error:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message || "Failed to execute non-linear search in the vector space.",
+      reasoningLogs: [`[CRITICAL ERROR] Retaliation from the loam: ${err.message}`]
     });
   }
 });
