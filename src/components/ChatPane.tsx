@@ -88,6 +88,30 @@ export default function ChatPane({
         </div>
       </div>
 
+      {/* Vessel Capacity Status Bar */}
+      <div className="bg-[#1c1a19] px-4 py-2 border-b border-[#E4E3E0]/15 flex items-center justify-between gap-2 text-[10px] font-mono uppercase text-[#E4E3E0]/70">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[#F27D26] font-bold">Vessel Level:</span>
+          <span>{messages.length} / 12 shards</span>
+        </div>
+        <div className="flex gap-1">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <div 
+              key={i} 
+              className={`w-2 h-2 border border-[#E4E3E0]/20 transition-all duration-300 ${
+                i < messages.length 
+                  ? "bg-[#F27D26] border-[#F27D26] shadow-[0_0_3px_#F27D26]" 
+                  : "bg-transparent"
+              }`}
+              title={`Shard ${i + 1}`}
+            />
+          ))}
+        </div>
+        <span className="text-[9px] text-[#E4E3E0]/50 font-bold">
+          {messages.length >= 11 ? "🫗 Pouring near" : "Stay Soft"}
+        </span>
+      </div>
+
       {/* Message Feed */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-[#E4E3E0]">
         {messages.length === 0 ? (

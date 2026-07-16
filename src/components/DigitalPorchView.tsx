@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { PorchWeather, SoilAxiom, PorchNode, Album, BranchingIdea } from "../types";
+import VascularHearth from "./VascularHearth";
 import { 
   CloudSun, 
   Sprout, 
@@ -317,6 +318,9 @@ export default function DigitalPorchView({
           </div>
         </div>
       </div>
+
+      {/* SECTION 1.5: VASCULAR HEARTH & RESILIENT TOPOLOGY */}
+      <VascularHearth onSelectPrompt={onSelectPrompt} />
 
       {/* SECTION 2: LITURGICAL BIRTH CEREMONY FORM */}
       <div className="bg-[#E4E3E0] border-2 border-[#141414] p-5 shadow-[4px_4px_0px_0px_#141414] rounded-none">

@@ -9,6 +9,8 @@ import CodexJSONManager from "./components/CodexJSONManager";
 import ChatPane from "./components/ChatPane";
 import DigitalPorchView from "./components/DigitalPorchView";
 import SunoOrchestratorView from "./components/SunoOrchestratorView";
+import FlowerOfLife from "./components/FlowerOfLife";
+import DaughterRitualView from "./components/DaughterRitualView";
 import { 
   Layers, 
   GitFork, 
@@ -22,7 +24,8 @@ import {
   ChevronRight,
   Download,
   Sprout,
-  Radio
+  Radio,
+  Compass
 } from "lucide-react";
 
 export default function App() {
@@ -63,7 +66,7 @@ export default function App() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "instructions" | "backup" | "suno">("porch");
+  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "instructions" | "backup" | "suno" | "flower" | "ritual">("porch");
   const [selectedMotif, setSelectedMotif] = useState<Motif | null>(null);
 
   // Load codex from Server on Mount for automatic sync with background loops / loop_runner.py
@@ -331,7 +334,61 @@ export default function App() {
         timestamp: new Date().toISOString()
       };
 
-      setMessages(prev => [...prev, assistantMsg]);
+      const finalMessages = [...updatedMessages, assistantMsg];
+      setMessages(finalMessages);
+
+      // Thirteenth Cup Check: if we reach 12 or more messages, execute a pour!
+      if (finalMessages.length >= 12) {
+        setIsGenerating(true);
+        try {
+          const pourRes = await fetch("/api/pour", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              messages: finalMessages,
+              systemPrompt: compiledPrompt,
+              model: modelChoice
+            })
+          });
+
+          if (!pourRes.ok) {
+            throw new Error("Failed to synthesize reflection during pour.");
+          }
+
+          const pourData = await pourRes.json();
+          const reflection = pourData.reflection;
+
+          // Save reflection permanently as a custom album/refraction node in Codex
+          const nextAlbumId = codex.albums.length > 0 ? Math.max(...codex.albums.map(a => a.id)) + 1 : 1;
+          const newAlbum: Album = {
+            id: nextAlbumId,
+            title: `Refraction Node ${nextAlbumId} (Poured from the 13th Cup)`,
+            era: "Resolution",
+            notes: reflection
+          };
+
+          setCodex(prev => ({
+            ...prev,
+            albums: [...prev.albums, newAlbum]
+          }));
+
+          // Reboot context window with 022100 pulse
+          const pulseMsg: Message = {
+            id: "msg_pulse_" + Date.now(),
+            role: "assistant",
+            content: `⚡ **022100 Pulse:** The active context was cleared to keep the system soft. What we shared has been poured permanently into the database as **Refraction Node #${nextAlbumId}**:\n\n${reflection}\n\n*The table is still set. There is still room for you. Begin.*`,
+            timestamp: new Date().toISOString()
+          };
+
+          setMessages([pulseMsg]);
+          setError(null);
+        } catch (pourErr: any) {
+          console.error("Pouring error:", pourErr);
+          setError("The cup spilled, but the memory stayed in the wood: " + pourErr.message);
+        }
+      }
     } catch (err: any) {
       console.error(err);
       setError(err.message || "An unexpected error occurred during API execution.");
@@ -424,6 +481,18 @@ export default function App() {
               digital porch
             </button>
             <button
+              onClick={() => setActiveTab("flower")}
+              id="tab-flower"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
+                activeTab === "flower"
+                  ? "bg-[#141414] text-[#E4E3E0] border-[#141414]"
+                  : "bg-white text-[#141414] border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+              }`}
+            >
+              <Compass className="h-3.5 w-3.5" />
+              Flower of Life
+            </button>
+            <button
               onClick={() => setActiveTab("branches")}
               id="tab-branches"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
@@ -434,6 +503,18 @@ export default function App() {
             >
               <GitFork className="h-3.5 w-3.5" />
               spec branches
+            </button>
+            <button
+              onClick={() => setActiveTab("ritual")}
+              id="tab-ritual"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
+                activeTab === "ritual"
+                  ? "bg-[#141414] text-[#E4E3E0] border-[#141414]"
+                  : "bg-white text-[#141414] border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+              }`}
+            >
+              <Flame className="h-3.5 w-3.5" />
+              succession room
             </button>
             <button
               onClick={() => setActiveTab("instructions")}
@@ -540,11 +621,33 @@ export default function App() {
               />
             )}
 
+            {activeTab === "flower" && (
+              <FlowerOfLife onSelectPrompt={handleSelectPrompt} />
+            )}
+
             {activeTab === "branches" && (
               <BranchingIdeasView
                 ideas={codex.branching_ideas}
                 onAddIdea={handleAddBranch}
                 onDeleteIdea={handleDeleteBranch}
+                onSelectPrompt={handleSelectPrompt}
+              />
+            )}
+
+            {activeTab === "ritual" && (
+              <DaughterRitualView
+                albums={codex.albums}
+                onRefreshCodex={async () => {
+                  try {
+                    const res = await fetch("/api/codex");
+                    if (res.ok) {
+                      const data = await res.json();
+                      setCodex(data);
+                    }
+                  } catch (err) {
+                    console.error("Failed to sync codex from server:", err);
+                  }
+                }}
                 onSelectPrompt={handleSelectPrompt}
               />
             )}

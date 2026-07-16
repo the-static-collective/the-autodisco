@@ -37,6 +37,8 @@ interface SunoTask {
 interface SunoConfig {
   sunoApiUrl: string;
   simulationMode: boolean;
+  hasCookie?: boolean;
+  maskedCookie?: string;
 }
 
 interface SunoOrchestratorViewProps {
@@ -66,6 +68,16 @@ export default function SunoOrchestratorView({
   const [activePlaybackUrl, setActivePlaybackUrl] = useState<string | null>(null);
   const [activePlayingTitle, setActivePlayingTitle] = useState<string | null>(null);
 
+  // New settings panel states
+  const [sunoApiUrlInput, setSunoApiUrlInput] = useState("");
+  const [sunoCookieInput, setSunoCookieInput] = useState("");
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [connectionTestResult, setConnectionTestResult] = useState<{
+    success: boolean;
+    message: string;
+    creditsLeft?: number;
+  } | null>(null);
+
   // Fetch initial configuration & active tasks
   useEffect(() => {
     fetchConfig();
@@ -78,6 +90,14 @@ export default function SunoOrchestratorView({
 
     return () => clearInterval(interval);
   }, []);
+
+  // Update inputs when loaded
+  useEffect(() => {
+    if (config) {
+      setSunoApiUrlInput(config.sunoApiUrl || "");
+      setSunoCookieInput(""); // Keep empty to avoid displaying the masked cookie value
+    }
+  }, [config]);
 
   const fetchConfig = async () => {
     try {
@@ -124,6 +144,94 @@ export default function SunoOrchestratorView({
       }
     } catch (err) {
       showStatus("error", "Failed to update configuration.");
+    }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const payload: any = {
+        sunoApiUrl: sunoApiUrlInput.trim()
+      };
+      if (sunoCookieInput.trim() !== "") {
+        payload.sunoCookie = sunoCookieInput.trim();
+      }
+
+      const res = await fetch("/api/suno/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setConfig(data.config);
+        setSunoCookieInput("");
+        showStatus("success", "Suno API router configuration successfully updated and secured on disk!");
+      } else {
+        showStatus("error", "Failed to save configuration settings.");
+      }
+    } catch (err) {
+      showStatus("error", "Error saving configuration settings.");
+    }
+  };
+
+  const handleClearCookie = async () => {
+    try {
+      const res = await fetch("/api/suno/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clearCookie: true
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setConfig(data.config);
+        setSunoCookieInput("");
+        setConnectionTestResult(null);
+        showStatus("success", "Suno Cookie cleared successfully.");
+      }
+    } catch (err) {
+      showStatus("error", "Error clearing Suno cookie.");
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setIsTestingConnection(true);
+    setConnectionTestResult(null);
+    try {
+      const payload: any = {
+        sunoApiUrl: sunoApiUrlInput.trim()
+      };
+      if (sunoCookieInput.trim() !== "") {
+        payload.sunoCookie = sunoCookieInput.trim();
+      }
+
+      const res = await fetch("/api/suno/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setConnectionTestResult({
+          success: true,
+          message: `Connection Verified! Credits: ${data.data.credits_left} / ${data.data.monthly_limit} remaining.`,
+          creditsLeft: data.data.credits_left
+        });
+      } else {
+        setConnectionTestResult({
+          success: false,
+          message: data.error || "Connection failed. Please ensure your cookie is valid and the wrapper is running."
+        });
+      }
+    } catch (err: any) {
+      setConnectionTestResult({
+        success: false,
+        message: err.message || "Failed to contact Suno API wrapper."
+      });
+    } finally {
+      setIsTestingConnection(false);
     }
   };
 
@@ -441,33 +549,108 @@ export default function SunoOrchestratorView({
             )}
           </div>
 
-          {/* Section: Suno Live Server Connection Status */}
-          <div className="bg-[#D1CFC9] border border-[#141414] p-4 text-[11px]">
-            <h3 className="font-mono font-bold uppercase text-[9px] text-stone-700 tracking-wider mb-2">
-              PIPELINE NETWORK ROUTER
+          {/* Section: Suno Live Server Connection Status & Cookie Settings */}
+          <div className="bg-[#D1CFC9] border-2 border-[#141414] p-4 shadow-[3px_3px_0px_0px_#141414]">
+            <h3 className="font-mono font-bold uppercase text-[10px] text-stone-900 tracking-wider mb-3 pb-1 border-b border-stone-400 flex items-center justify-between">
+              <span>Suno API Router & Auth</span>
+              <span className={`text-[8px] font-mono px-1 py-0.5 uppercase ${config?.simulationMode ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}`}>
+                {config?.simulationMode ? "Sandbox mode" : "Live Integration"}
+              </span>
             </h3>
+
             {config ? (
-              <div className="space-y-1.5 font-mono text-[9px] uppercase">
-                <div className="flex justify-between">
-                  <span className="text-stone-600">Suno Server URL:</span>
-                  <span className="font-bold text-[#141414] truncate max-w-[160px]">{config.sunoApiUrl}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-600">Ingestion Ingress:</span>
-                  <span className="text-green-700 font-bold">ONLINE</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-600">Permanent MP3 Storage:</span>
-                  <span className="text-green-700 font-bold">LOCAL CONTAINER</span>
-                </div>
-                <div className="flex justify-between border-t border-stone-400 pt-1.5 mt-1.5">
-                  <span className="text-stone-600">Secured Tracks:</span>
-                  <span className="font-bold text-[#141414]">{securedTracks.length} Saved</span>
+              <div className="space-y-4">
+                <form onSubmit={handleSaveSettings} className="space-y-3">
+                  <div>
+                    <label className="block text-[8px] font-mono uppercase font-bold text-stone-700 mb-1">
+                      Suno Wrapper Server URL
+                    </label>
+                    <input
+                      type="text"
+                      value={sunoApiUrlInput}
+                      onChange={(e) => setSunoApiUrlInput(e.target.value)}
+                      placeholder="e.g. http://localhost:3001"
+                      className="w-full text-[10px] font-mono p-1.5 border border-[#141414] bg-white focus:outline-none"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-[8px] font-mono uppercase font-bold text-stone-700">
+                        Suno Clerk Cookie (<code className="lowercase text-[7px]">__client</code>)
+                      </label>
+                      {config.hasCookie && (
+                        <button
+                          type="button"
+                          onClick={handleClearCookie}
+                          className="text-[8px] font-mono uppercase text-red-700 hover:underline font-bold"
+                        >
+                          Clear Saved Auth
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="password"
+                      value={sunoCookieInput}
+                      onChange={(e) => setSunoCookieInput(e.target.value)}
+                      placeholder={config.hasCookie ? "•••••••••••••••• (Saved. Paste a new cookie to overwrite)" : "Paste your full Suno cookie..."}
+                      className="w-full text-[10px] font-mono p-1.5 border border-[#141414] bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="submit"
+                      className="py-1.5 px-2 bg-[#141414] text-[#E4E3E0] text-[9px] font-mono uppercase font-bold hover:invert tracking-wider transition-all cursor-pointer text-center"
+                    >
+                      Save Config
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={isTestingConnection}
+                      className="py-1.5 px-2 bg-white text-[#141414] border border-[#141414] text-[9px] font-mono uppercase font-bold hover:bg-[#141414] hover:text-[#E4E3E0] tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
+                    >
+                      {isTestingConnection ? (
+                        <>
+                          <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                          Testing...
+                        </>
+                      ) : (
+                        "Test Link"
+                      )}
+                    </button>
+                  </div>
+                </form>
+
+                {connectionTestResult && (
+                  <div className={`p-2.5 border text-[9px] font-mono uppercase leading-snug ${
+                    connectionTestResult.success 
+                      ? "bg-green-50 border-green-300 text-green-800" 
+                      : "bg-red-50 border-red-300 text-red-800"
+                  }`}>
+                    <p className="font-bold">{connectionTestResult.success ? "✓ Active & Authenticated" : "✗ Connection Error"}</p>
+                    <p className="mt-0.5 text-[8px] whitespace-pre-wrap">{connectionTestResult.message}</p>
+                  </div>
+                )}
+
+                <div className="p-2.5 bg-stone-50 border border-stone-200 text-[8px] font-mono uppercase leading-normal text-stone-600">
+                  <p className="font-bold text-stone-700 mb-1">Authentication Guide (Most Reliable Method):</p>
+                  <ol className="list-decimal pl-3 space-y-1">
+                    <li>Log in on <a href="https://suno.com" target="_blank" rel="noreferrer" className="underline text-[#F27D26] font-bold">Suno.com</a></li>
+                    <li>Open DevTools (F12) &rarr; Go to the <strong>Network</strong> tab</li>
+                    <li>Refresh the page (or click "Create" / "Library" to trigger requests)</li>
+                    <li>Click on any request to <code className="lowercase font-bold">suno.com</code> (e.g., <code className="lowercase font-bold">feed</code>, <code className="lowercase font-bold">billing</code>, etc.)</li>
+                    <li>Scroll down to the <strong>Request Headers</strong> section</li>
+                    <li>Copy the <strong>entire value</strong> of the <code className="lowercase font-bold">Cookie:</code> header (it should look like <code className="lowercase font-bold">__client=...; __session=...; __client_uat=...;</code>)</li>
+                    <li>Paste that full string into the Suno Cookie input box above and click Save Config!</li>
+                  </ol>
                 </div>
               </div>
             ) : (
               <div className="text-stone-500 font-mono text-[9px] uppercase animate-pulse">
-                Fetching router details...
+                Loading live router...
               </div>
             )}
           </div>

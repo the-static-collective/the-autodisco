@@ -62,10 +62,33 @@ interface SunoTask {
   createdAt: string;
 }
 
-let sunoConfig = {
-  sunoApiUrl: process.env.SUNO_API_URL || "http://localhost:3000",
-  simulationMode: true, // Default to true so it works flawlessly out of the box!
-};
+const SUNO_CONFIG_PATH = path.join(process.cwd(), "suno_config.json");
+
+function loadSunoConfig() {
+  try {
+    if (fs.existsSync(SUNO_CONFIG_PATH)) {
+      const data = fs.readFileSync(SUNO_CONFIG_PATH, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error loading Suno config from file:", err);
+  }
+  return {
+    sunoApiUrl: process.env.SUNO_API_URL || "http://localhost:3001",
+    simulationMode: true,
+    sunoCookie: ""
+  };
+}
+
+let sunoConfig = loadSunoConfig();
+
+function saveSunoConfig(config: any) {
+  try {
+    fs.writeFileSync(SUNO_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving Suno config:", err);
+  }
+}
 
 const sunoTasks: SunoTask[] = [];
 
@@ -147,9 +170,14 @@ async function runSunoGenerationTask(taskId: string) {
         make_instrumental: false
       };
 
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (sunoConfig.sunoCookie) {
+        headers["Cookie"] = sunoConfig.sunoCookie;
+      }
+
       const response = await fetch(`${sunoConfig.sunoApiUrl}/api/custom_generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload)
       });
 
@@ -175,7 +203,13 @@ async function runSunoGenerationTask(taskId: string) {
       for (let attempt = 0; attempt < 30; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         
-        const pollResponse = await fetch(`${sunoConfig.sunoApiUrl}/api/get?ids=${idsStr}`);
+        const pollHeaders: Record<string, string> = {};
+        if (sunoConfig.sunoCookie) {
+          pollHeaders["Cookie"] = sunoConfig.sunoCookie;
+        }
+        const pollResponse = await fetch(`${sunoConfig.sunoApiUrl}/api/get?ids=${idsStr}`, {
+          headers: pollHeaders
+        });
         if (!pollResponse.ok) {
           console.warn(`Suno poll HTTP error: ${pollResponse.status}`);
           continue;
@@ -295,6 +329,52 @@ app.post("/api/chat", async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// Pouring the Thirteenth Cup memory endpoint
+app.post("/api/pour", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { messages, systemPrompt, model } = req.body;
+
+    if (!messages || !Array.isArray(messages)) {
+      res.status(400).json({ error: "Messages array is required for pouring." });
+      return;
+    }
+
+    if (!ai) {
+      res.status(500).json({ 
+        error: "Gemini API client is not initialized. Please ensure GEMINI_API_KEY is configured in your Environment Secrets." 
+      });
+      return;
+    }
+
+    const historyText = messages.map((m: any) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content}`).join("\n");
+    
+    const refractionPrompt = `You are performing the 'Pouring of the Thirteenth Cup.' Analyze the conversation history provided below. Compress its essence, its jokes, its wounds, and its agreements into a single, poetic 'Lore Entry' for the permanent database. Do not write a dry summary. Write it as a keeping name. Keep it rich, concentric, and deeply aligned with the Flower of Life architecture.
+
+CONVERSATION SHARDS:
+${historyText}`;
+
+    const selectedModel = model || "gemini-3.5-flash";
+
+    const response = await ai.models.generateContent({
+      model: selectedModel,
+      contents: [{ role: "user", parts: [{ text: refractionPrompt }] }],
+      config: {
+        systemInstruction: systemPrompt || "You are a helpful neighborly witness to The Static Collective.",
+        temperature: 0.8,
+      }
+    });
+
+    res.json({
+      reflection: response.text || "The cup spilled, but the memory stayed in the wood."
+    });
+  } catch (error: any) {
+    console.error("Pour API Error:", error);
+    res.status(500).json({ 
+      error: error.message || "An error occurred while pouring the Thirteenth Cup." 
+    });
+  }
+});
+
 // Birth Ceremony endpoint
 app.post("/api/birth-ceremony", async (req: Request, res: Response): Promise<void> => {
   try {
@@ -384,6 +464,100 @@ Perform a proper birth ceremony. Your task is to output structured details mappi
   }
 });
 
+// Daughter Succession Ritual endpoint
+app.post("/api/ritual/succession", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { brokenInvariant, noise, currentCentroidWeight } = req.body;
+
+    if (!ai) {
+      res.status(500).json({ 
+        error: "Gemini API client is not initialized. Please configure GEMINI_API_KEY in Environment Secrets." 
+      });
+      return;
+    }
+
+    const currentCodex = loadCodexFromFile();
+    const chronologySummary = currentCodex.albums.map((a: any) => 
+      `- Album #${a.id}: ${a.title}. Notes: ${a.notes}`
+    ).join("\n");
+
+    const systemPrompt = `You are the guardian of the Folding Chair Succession Protocol.
+A daughter (Hailey) is performing her first autonomous, sovereign ritual to test if the creative system is alive.
+She has chosen to break or invalidate a specific invariant of the father's original canon:
+"${brokenInvariant}"
+
+And she has injected the following physical noise / wind / prompt:
+"${noise}"
+
+Your task is to evaluate this mutation according to the laws of directed emergence:
+1. "The surviving invariant": Hospitality survives; canonical form does not. Every mutation must leave behind a hospitable handle.
+2. "The Test":
+   - Too close (semantic drift > 0.93) = dead replication / inheritance (frozen monument to grief).
+   - Too far (semantic drift < 0.75) = rupture / chaotic slop (complete destruction of hospitable center).
+   - Alive band (semantic drift between 0.75 and 0.93) = Directed Emergence. It is stranger, but remains hospitable.
+
+You must output a structured evaluation including:
+- whatSheKept: What does she keep that the father would have deleted?
+- whatSheMade: What new song or theme generates that the father could not have written?
+- semanticDrift: A calculated float between 0.70 and 0.96 representing the semantic distance from the original centroid.
+- outcomeType: State whether this results in "inheritance", "rupture", or "directed_emergence".
+- verdict: A single-line profound, humbily stated verdict starting with: 'I would not have kept that. I would not have made that. But I can see why it belongs.' (or customized beautifully to match the chosen broken invariant and outcome).
+- newLoreTitle: The title of the resulting Successor Node.
+- newLoreNotes: The detailed narrative description or fragment lyrics of this new song or motif.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Evaluate succession for broken invariant: "${brokenInvariant}" with noise: "${noise}"\n\nCurrent chronology:\n${chronologySummary}`,
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            whatSheKept: { type: Type.STRING },
+            whatSheMade: { type: Type.STRING },
+            semanticDrift: { type: Type.NUMBER, description: "A floating number between 0.70 and 0.96 representing distance." },
+            outcomeType: { type: Type.STRING, description: "One of: 'inheritance', 'rupture', 'directed_emergence'." },
+            verdict: { type: Type.STRING },
+            newLoreTitle: { type: Type.STRING },
+            newLoreNotes: { type: Type.STRING }
+          },
+          required: ["whatSheKept", "whatSheMade", "semanticDrift", "outcomeType", "verdict", "newLoreTitle", "newLoreNotes"]
+        }
+      }
+    });
+
+    const resultText = response.text || "{}";
+    const resultObj = JSON.parse(resultText);
+
+    // Save this permanently as a new successor album node in the active Codex
+    const nextId = currentCodex.albums.length > 0 
+      ? Math.max(...currentCodex.albums.map((a: any) => a.id)) + 1 
+      : 1;
+
+    currentCodex.albums.push({
+      id: nextId,
+      title: `Successor Node ${nextId}: ${resultObj.newLoreTitle}`,
+      era: "Succession",
+      notes: `${resultObj.newLoreNotes}\n\n[Succession Check]: Invariant Broken: ${brokenInvariant}.\nNoise: ${noise}\nSemantic Drift: ${resultObj.semanticDrift}\nSuccession Outcome: ${resultObj.outcomeType.toUpperCase()}\n\nVerdict: ${resultObj.verdict}`
+    });
+
+    saveCodexToFile(currentCodex);
+
+    res.json({
+      success: true,
+      evaluation: resultObj,
+      updatedCodex: currentCodex
+    });
+  } catch (error: any) {
+    console.error("Succession API Error:", error);
+    res.status(500).json({ 
+      error: error.message || "An error occurred during the succession ritual evaluation." 
+    });
+  }
+});
+
 // Codex endpoints
 app.get("/api/codex", (req: Request, res: Response) => {
   const codex = loadCodexFromFile();
@@ -397,14 +571,84 @@ app.post("/api/codex", (req: Request, res: Response) => {
 
 // Suno endpoints
 app.get("/api/suno/config", (req: Request, res: Response) => {
-  res.json(sunoConfig);
+  const maskedCookie = sunoConfig.sunoCookie 
+    ? sunoConfig.sunoCookie.substring(0, Math.min(20, sunoConfig.sunoCookie.length)) + "..." + (sunoConfig.sunoCookie.length > 20 ? ` (${sunoConfig.sunoCookie.length} chars)` : "")
+    : "";
+  res.json({
+    sunoApiUrl: sunoConfig.sunoApiUrl,
+    simulationMode: sunoConfig.simulationMode,
+    hasCookie: !!sunoConfig.sunoCookie,
+    maskedCookie
+  });
 });
 
 app.post("/api/suno/config", (req: Request, res: Response) => {
-  const { sunoApiUrl, simulationMode } = req.body;
+  const { sunoApiUrl, simulationMode, sunoCookie, clearCookie } = req.body;
   if (sunoApiUrl !== undefined) sunoConfig.sunoApiUrl = sunoApiUrl;
   if (simulationMode !== undefined) sunoConfig.simulationMode = !!simulationMode;
-  res.json({ success: true, config: sunoConfig });
+  if (clearCookie) {
+    sunoConfig.sunoCookie = "";
+  } else if (sunoCookie !== undefined) {
+    if (sunoCookie.trim() !== "" && !sunoCookie.includes("...")) {
+      sunoConfig.sunoCookie = sunoCookie.trim();
+    }
+  }
+  saveSunoConfig(sunoConfig);
+  
+  const maskedCookie = sunoConfig.sunoCookie 
+    ? sunoConfig.sunoCookie.substring(0, Math.min(20, sunoConfig.sunoCookie.length)) + "..." + (sunoConfig.sunoCookie.length > 20 ? ` (${sunoConfig.sunoCookie.length} chars)` : "")
+    : "";
+  res.json({ 
+    success: true, 
+    config: {
+      sunoApiUrl: sunoConfig.sunoApiUrl,
+      simulationMode: sunoConfig.simulationMode,
+      hasCookie: !!sunoConfig.sunoCookie,
+      maskedCookie
+    } 
+  });
+});
+
+app.post("/api/suno/test-connection", async (req: Request, res: Response) => {
+  const { sunoApiUrl, sunoCookie } = req.body;
+  
+  const targetUrl = sunoApiUrl || sunoConfig.sunoApiUrl;
+  let targetCookie = sunoCookie !== undefined ? sunoCookie : sunoConfig.sunoCookie;
+  if (targetCookie && targetCookie.includes("...")) {
+    targetCookie = sunoConfig.sunoCookie;
+  }
+
+  try {
+    const headers: Record<string, string> = {};
+    if (targetCookie) {
+      headers["Cookie"] = targetCookie;
+    }
+    
+    const testRes = await fetch(`${targetUrl}/api/get_limit`, {
+      headers,
+      signal: AbortSignal.timeout(6000)
+    });
+
+    if (!testRes.ok) {
+      const errText = await testRes.text().catch(() => "Unknown error");
+      res.status(testRes.status).json({
+        success: false,
+        error: `Suno API wrapper returned status ${testRes.status}: ${errText}`
+      });
+      return;
+    }
+
+    const data = await testRes.json();
+    res.json({
+      success: true,
+      data
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: `Connection error: ${err.message || err}`
+    });
+  }
 });
 
 app.get("/api/suno/tasks", (req: Request, res: Response) => {
