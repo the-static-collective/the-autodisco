@@ -41,6 +41,8 @@ export interface PorchNode {
   mutation: string;
   stage: 'seed' | 'sprout' | 'rooted' | 'flowering' | 'fruit' | 'compost' | 'soil';
   resonanceWeight: number;
+  ledgerEventId?: string;
+  parentEventId?: string;
 }
 
 export interface Codex {

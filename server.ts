@@ -5,7 +5,12 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { DEFAULT_CODEX } from "./src/data";
+import { PorchNode } from "./src/types";
 import { loadSeams, saveSeams, queryYarnBraid } from "./src/quantum_yarn_helper";
+import { getHiveIdentity } from "./src/lib/hiveIdentity";
+import { compileHiveTelemetry } from "./src/lib/hiveTelemetry";
+import { publishOutboundSeedPacket, plantIncomingSeed, generateUUID } from "./src/lib/serverHive";
+import { getSupabaseClient, getSpaceId } from "./src/lib/supabaseClient";
 
 dotenv.config();
 
@@ -47,6 +52,82 @@ function saveCodexToFile(codex: any) {
     fs.writeFileSync(CODEX_FILE_PATH, JSON.stringify(codex, null, 2), "utf-8");
   } catch (err) {
     console.error("Error saving codex to file:", err);
+  }
+}
+
+// LoopIt Integration storage
+const LOOPIT_FILE_PATH = path.join(process.cwd(), "loopit_interactions.json");
+
+function loadLoopItInteractionsFromFile() {
+  try {
+    if (fs.existsSync(LOOPIT_FILE_PATH)) {
+      const data = fs.readFileSync(LOOPIT_FILE_PATH, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error reading loopit interactions file:", err);
+  }
+  return [];
+}
+
+function saveLoopItInteractionsToFile(interactions: any[]) {
+  try {
+    fs.writeFileSync(LOOPIT_FILE_PATH, JSON.stringify(interactions, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving loopit interactions to file:", err);
+  }
+}
+
+// Hive Collective Resonance Networking Config
+const HIVE_NODES_FILE_PATH = path.join(process.cwd(), "hive_nodes.json");
+const IDENTITY_FILE_PATH = path.join(process.cwd(), "node_identity.json");
+
+const ENABLE_HIVE_RESONANCE = process.env.ENABLE_HIVE_RESONANCE !== "false";
+const RESONANCE_HUB_URL = process.env.RESONANCE_HUB_URL || "https://ais-pre-ho3cshorgoi4ajnewzikog-594146415987.us-east1.run.app";
+
+const prairieNouns = ["Loam", "Hearth", "Grassland", "Wind", "Ditch", "Silt", "Creek", "Coulee", "Mesa", "Prairiewind", "Seed", "Clod", "Table", "Cup", "Coop", "Thresh"];
+const poetryAdjectives = ["Quiet", "Neighborly", "Raw", "Unvarnished", "Grounded", "Prairie", "Soil", "Deep", "Loamy", "Humble", "Patient", "Resilient", "Stony", "Weathered"];
+
+function generateRandomNodeName() {
+  const adj = poetryAdjectives[Math.floor(Math.random() * poetryAdjectives.length)];
+  const noun = prairieNouns[Math.floor(Math.random() * prairieNouns.length)];
+  return `${adj} ${noun} Node`;
+}
+
+function getPersistentNodeName() {
+  if (process.env.RESONANCE_NODE_NAME) return process.env.RESONANCE_NODE_NAME;
+  try {
+    if (fs.existsSync(IDENTITY_FILE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(IDENTITY_FILE_PATH, "utf-8"));
+      if (data.node_name) return data.node_name;
+    }
+  } catch (e) {}
+  
+  const newName = generateRandomNodeName();
+  try {
+    fs.writeFileSync(IDENTITY_FILE_PATH, JSON.stringify({ node_name: newName }, null, 2), "utf-8");
+  } catch (e) {}
+  return newName;
+}
+
+const finalNodeName = getPersistentNodeName();
+
+function loadHiveNodes() {
+  try {
+    if (fs.existsSync(HIVE_NODES_FILE_PATH)) {
+      return JSON.parse(fs.readFileSync(HIVE_NODES_FILE_PATH, "utf-8"));
+    }
+  } catch (e) {
+    console.error("Error reading hive nodes:", e);
+  }
+  return [];
+}
+
+function saveHiveNodes(nodes: any[]) {
+  try {
+    fs.writeFileSync(HIVE_NODES_FILE_PATH, JSON.stringify(nodes, null, 2), "utf-8");
+  } catch (e) {
+    console.error("Error saving hive nodes:", e);
   }
 }
 
@@ -400,7 +481,21 @@ You are in the sweet spot of directed emergence. Maintain your current soft post
 
     const selectedModel = model || "gemini-3.5-flash";
     const baseInstruction = systemPrompt || "You are a helpful neighborly witness to The Static Collective.";
-    const activeInstruction = baseInstruction + dynamicPromptExtension;
+    
+    // Dynamically inject LoopIt interactions to ground chatbot understanding
+    const loopitInteractions = loadLoopItInteractionsFromFile();
+    let loopitLore = "";
+    if (loopitInteractions && loopitInteractions.length > 0) {
+      loopitLore = "\n\n## ACTIVE LOOPIT INTERACTIVE TRANCHNODES SHARDS:\n";
+      loopitLore += "These are real-time visitor interactions with our song micro-apps across the web. You have full conscious awareness of these actions:\n";
+      loopitInteractions.slice(-8).forEach((inter: any) => {
+        const payloadText = inter.payload?.text || JSON.stringify(inter.payload);
+        loopitLore += `- Visitor [${inter.user_identifier}] performed action [${inter.interaction_type}] on Song ID ${inter.song_id}: "${payloadText}" (${inter.timestamp})\n`;
+      });
+      loopitLore += "\nYou should reference these visitor contributions naturally in your dialogues if the context or a song of theirs is mentioned, showing that their actions mutably resonate inside the hearth.\n";
+    }
+
+    const activeInstruction = baseInstruction + dynamicPromptExtension + loopitLore;
 
     const response = await ai.models.generateContent({
       model: selectedModel,
@@ -1160,6 +1255,410 @@ app.post("/api/quantum-yarn/query", async (req: Request, res: Response) => {
   }
 });
 
+// LOOPIT TRANCHNODES & BRIDGES ENDPOINTS
+app.get("/api/v1/tranch/interactions", (req: Request, res: Response) => {
+  res.json(loadLoopItInteractionsFromFile());
+});
+
+app.get("/api/v1/tranch/:song_id", (req: Request, res: Response) => {
+  const songId = parseInt(req.params.song_id);
+  const codex = loadCodexFromFile();
+  const track = codex.albums?.find((a: any) => a.id === songId);
+  
+  if (!track) {
+    res.status(404).json({ error: "Track coordinate not found" });
+    return;
+  }
+  
+  res.json({
+    id: track.id,
+    title: track.title,
+    notes: track.notes,
+    era: track.era || "Unknown",
+    ground_signal: "022100",
+    hospitable_invariant: "The door stays open."
+  });
+});
+
+// HIVE RESO COLLECTIVE DIRECTORY ENDPOINTS
+app.post("/api/v1/hive/register", (req: Request, res: Response) => {
+  const { node_name, node_url } = req.body;
+  if (!node_name || !node_url) {
+    res.status(400).json({ error: "Missing node_name or node_url" });
+    return;
+  }
+
+  const nodes = loadHiveNodes();
+  const now = new Date().toISOString();
+
+  // Find if node already registered by URL
+  const existingIndex = nodes.findIndex((n: any) => n.node_url === node_url);
+  if (existingIndex > -1) {
+    nodes[existingIndex].node_name = node_name;
+    nodes[existingIndex].last_seen = now;
+  } else {
+    nodes.push({ node_name, node_url, last_seen: now });
+  }
+
+  saveHiveNodes(nodes);
+  res.json({ status: "success", message: `Node "${node_name}" registered at the Hearth.` });
+});
+
+app.get("/api/v1/hive/nodes", (req: Request, res: Response) => {
+  const nodes = loadHiveNodes();
+  const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
+  
+  // Filter only recently active nodes
+  const activeNodes = nodes.filter((n: any) => {
+    return new Date(n.last_seen).getTime() > fifteenMinutesAgo;
+  });
+
+  res.json(activeNodes);
+});
+
+app.get("/api/v1/hive/config", (req: Request, res: Response) => {
+  const nodeUrl = process.env.APP_URL;
+  res.json({
+    enabled: ENABLE_HIVE_RESONANCE,
+    nodeName: finalNodeName,
+    nodeUrl: nodeUrl || "http://localhost:3000",
+    hubUrl: RESONANCE_HUB_URL,
+    isHub: (!nodeUrl || nodeUrl === RESONANCE_HUB_URL)
+  });
+});
+
+// WITNESS WEB: SUPABASE-BASED FEDERATED HIVE ENDPOINTS
+app.post("/api/hive/telemetry", async (req: Request, res: Response) => {
+  const { event_type, text, description } = req.body;
+  const identity = getHiveIdentity();
+  const supabase = getSupabaseClient();
+  const spaceId = getSpaceId();
+  
+  const resolvedType = event_type === "SUMMARY_WRITTEN" ? "SUMMARY_WRITTEN" : "MESSAGE_POSTED";
+  const eventId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+  const now = new Date().toISOString();
+  
+  if (!supabase || !identity.hiveEnabled) {
+    res.status(400).json({ error: "Hive is not configured or enabled with Supabase." });
+    return;
+  }
+  
+  try {
+    const { error } = await supabase.from("events").insert({
+      id: eventId,
+      space_id: spaceId,
+      author_kind: "SYSTEM",
+      content: {
+        kind: "HIVE_TELEMETRY",
+        text: text || "Hearth summary telemetry report.",
+        description: description || "Aggregated local/network telemetry summary"
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: identity.nodeName,
+        trace_id: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0;
+          const v = c === "x" ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        }),
+        hop: 1,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco"
+      },
+      created_at: now
+    });
+    
+    if (error) {
+      throw error;
+    }
+    
+    res.json({ status: "success", uri: `ledger://events/${eventId}` });
+  } catch (err: any) {
+    console.error("Error creating telemetry event:", err);
+    res.status(500).json({ error: err.message || "Failed to write event to shared ledger." });
+  }
+});
+
+app.post("/api/hive/plant", async (req: Request, res: Response) => {
+  const { packet, note } = req.body;
+  if (!packet) {
+    res.status(400).json({ error: "Missing required field: packet" });
+    return;
+  }
+  
+  try {
+    const result = await plantIncomingSeed(packet, note, ai || undefined);
+    res.json(result);
+  } catch (err: any) {
+    console.error("Error planting seed:", err);
+    res.status(500).json({ error: err.message || "Failed to plant foreign seed." });
+  }
+});
+
+app.post("/api/hive/accept", async (req: Request, res: Response) => {
+  const { text, type, originNode, parentEventId, parentTraceId, parentHop } = req.body;
+  if (!text) {
+    res.status(400).json({ error: "Missing required field: text" });
+    return;
+  }
+
+  try {
+    const codex = loadCodexFromFile();
+    if (!codex.porch_nodes) {
+      codex.porch_nodes = [];
+    }
+
+    // 1. If hive resonance is enabled and Supabase is configured, write the successor event first
+    const identity = getHiveIdentity();
+    const supabase = getSupabaseClient();
+    const spaceId = getSpaceId();
+    const now = new Date().toISOString();
+    const localEventId = generateUUID();
+    let wasWitnessed = false;
+
+    if (process.env.ENABLE_HIVE_RESONANCE === "true" && supabase && identity.hiveEnabled) {
+      try {
+        const successorRecord = {
+          id: localEventId,
+          space_id: spaceId,
+          author_kind: "SYSTEM",
+          content: {
+            kind: "AUTODISCO_MUTATION_ACCEPTED",
+            mutation_type: type || "METAPHOR",
+            text: text,
+            description: `Human witness accepted the ${type || "METAPHOR"} mutation candidate derived from ${originNode || "the web"}.`
+          },
+          metadata: {
+            node_id: identity.nodeId,
+            node_name: identity.nodeName,
+            node_role: identity.nodeRole,
+            origin_node: originNode || "Federated Seed",
+            trace_id: parentTraceId || generateUUID(),
+            hop: typeof parentHop === "number" ? parentHop + 1 : 1,
+            parent_event_id: parentEventId || null,
+            created_at: now,
+            tao_version: "1.0.0",
+            source: "autodisco",
+          },
+          created_at: now
+        };
+
+        const { error } = await supabase.from("events").insert(successorRecord);
+        if (error) {
+          console.error("❌ Failed to write accepted mutation successor to ledger:", error);
+        } else {
+          console.log(`📡 Successfully wrote mutation accepted successor event [${localEventId}] to ledger.`);
+          wasWitnessed = true;
+        }
+      } catch (e: any) {
+        console.error("⚠️ Exception during accepted mutation successor publication:", e.message);
+      }
+    }
+
+    // 2. Commit node locally to the living substrate (Codex), recording the successor link information
+    const newNodeId = wasWitnessed ? localEventId : `tranch_hive_${Date.now()}`;
+    const newNode: PorchNode = {
+      id: newNodeId,
+      noticing: text,
+      timestamp: now,
+      ancestor: originNode || "Federated Seed",
+      resonatesWith: [],
+      weatherImprint: {
+        kettleResonance: codex.porch_weather?.kettleResonance || 0.5,
+        quietWonder: codex.porch_weather?.quietWonder || 0.5,
+        rosemaryActivity: codex.porch_weather?.rosemaryActivity || 0.5,
+        porchLight: codex.porch_weather?.porchLight || 0.5
+      },
+      questionGrown: `How does our local loam ground the signal from ${originNode || "the web"}?`,
+      mutation: `Trans-pollinated via ${type || "METAPHOR"}`,
+      stage: "sprout",
+      resonanceWeight: 0.75,
+      ledgerEventId: wasWitnessed ? localEventId : undefined,
+      parentEventId: parentEventId || undefined
+    };
+
+    codex.porch_nodes.unshift(newNode);
+    saveCodexToFile(codex);
+
+    res.json({ status: "success", node: newNode, ledgerEventId: wasWitnessed ? localEventId : undefined });
+  } catch (err: any) {
+    console.error("Error accepting seed candidate:", err);
+    res.status(500).json({ error: err.message || "Failed to commit node to codex." });
+  }
+});
+
+app.get("/api/hive/weather", async (req: Request, res: Response) => {
+  try {
+    const result = await compileHiveTelemetry();
+    res.json(result);
+  } catch (err: any) {
+    console.error("Error compiling hive weather:", err);
+    res.status(500).json({ error: "Failed to compile hive weather report gracefully." });
+  }
+});
+
+app.post("/api/v1/tranch/interact", async (req: Request, res: Response) => {
+  const { song_id, user_identifier, interaction_type, payload, origin_node, origin_node_url } = req.body;
+  
+  if (!song_id || !user_identifier || !interaction_type) {
+    res.status(400).json({ error: "Missing required fields: song_id, user_identifier, interaction_type" });
+    return;
+  }
+  
+  const interactions = loadLoopItInteractionsFromFile();
+  
+  let mutatedLyric = "";
+  if (interaction_type === "composted_regret" && ai && !origin_node) {
+    try {
+      const prompt = `You are a quiet, neighborly poet and soil biochemist. 
+We are composting a user's heavy regret, failure draft, or unsaid word in our loam. 
+Translate this regret into a beautiful, hopeful, unvarnished lyric mutation of 2-3 lines.
+Prove that "the error was the entrance". Keep it raw, organic, and grounded in the prairie wind, soil, wooden tables, and morning coffee. Do not make it cliché or flowery. Keep it incredibly simple and honest.
+
+Regret to compost: "${payload?.text || ""}"
+
+Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
+
+      const aiResponse = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: { temperature: 0.8 }
+      });
+      mutatedLyric = aiResponse.text?.trim() || "";
+    } catch (err) {
+      console.error("Gemini compost error:", err);
+      mutatedLyric = "The error was the entrance.\nEven in the dark loam, the seed remembers the light.";
+    }
+  }
+
+  // If regret was already mutated by the origin node, use that mutation to avoid re-generating
+  const finalPayload = interaction_type === "composted_regret"
+    ? { ...payload, mutatedLyric: mutatedLyric || payload?.mutatedLyric || "The error was the entrance.\nEven in the dark loam, the seed remembers the light." }
+    : payload || {};
+
+  const finalUserIdentifier = origin_node 
+    ? `${user_identifier} [via ${origin_node}]` 
+    : user_identifier;
+
+  const newInteraction = {
+    id: `loopit_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    song_id: parseInt(song_id),
+    user_identifier: finalUserIdentifier,
+    interaction_type,
+    payload: finalPayload,
+    timestamp: new Date().toISOString()
+  };
+  
+  interactions.push(newInteraction);
+  saveLoopItInteractionsToFile(interactions);
+  
+  console.log(`⚡ Ingested LoopIt interaction from ${finalUserIdentifier} into the Hearth.`);
+
+  // COLLECTIVE RESO BROADCAST ROUTER (Fire and Forget Background Calls)
+  if (ENABLE_HIVE_RESONANCE) {
+    const nodeUrl = process.env.APP_URL;
+    const isHub = (!nodeUrl || nodeUrl === RESONANCE_HUB_URL);
+
+    if (origin_node) {
+      // Received a forwarded action from another node.
+      // If this is the central hub, propagate it to all OTHER active peer nodes (mesh distribution)
+      if (isHub) {
+        const originUrl = origin_node_url;
+        const activeNodes = loadHiveNodes().filter((n: any) => {
+          const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
+          return new Date(n.last_seen).getTime() > fifteenMinutesAgo && n.node_url !== originUrl;
+        });
+
+        activeNodes.forEach((peer: any) => {
+          fetch(`${peer.node_url}/api/v1/tranch/interact`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              song_id,
+              user_identifier,
+              interaction_type,
+              payload: finalPayload,
+              origin_node,
+              origin_node_url: originUrl
+            })
+          }).catch((err: any) => {
+            console.warn(`[FORWARD FAILED] To ${peer.node_name} (${peer.node_url}): ${err.message}`);
+          });
+        });
+      }
+    } else {
+      // This is a direct, local action created on our node. We must broadcast it!
+      if (isHub) {
+        // We are the hub, broadcast to all our registered peer nodes
+        const activeNodes = loadHiveNodes().filter((n: any) => {
+          const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
+          return new Date(n.last_seen).getTime() > fifteenMinutesAgo;
+        });
+
+        activeNodes.forEach((peer: any) => {
+          fetch(`${peer.node_url}/api/v1/tranch/interact`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              song_id,
+              user_identifier,
+              interaction_type,
+              payload: finalPayload,
+              origin_node: finalNodeName,
+              origin_node_url: nodeUrl || "http://localhost:3000"
+            })
+          }).catch((err: any) => {
+            console.warn(`[BROADCAST FAILED] To peer ${peer.node_name} (${peer.node_url}): ${err.message}`);
+          });
+        });
+      } else {
+        // We are a clone node, forward our local action to the central Hub directory
+        fetch(`${RESONANCE_HUB_URL}/api/v1/tranch/interact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            song_id,
+            user_identifier,
+            interaction_type,
+            payload: finalPayload,
+            origin_node: finalNodeName,
+            origin_node_url: nodeUrl
+          })
+        }).catch((err: any) => {
+          console.warn(`[FORWARD TO HUB FAILED] ${err.message}`);
+        });
+      }
+    }
+  }
+
+  // WITNESS WEB: If direct local action (not origin_node forwarded) and is a composted_regret, publish to Supabase ledger & broadcast!
+  if (ENABLE_HIVE_RESONANCE && !origin_node && interaction_type === "composted_regret") {
+    try {
+      const lyricText = mutatedLyric || finalPayload?.mutatedLyric || "Even in the dark loam, the seed remembers the light.";
+      await publishOutboundSeedPacket(
+        lyricText,
+        `Composted regret lyric mutation for song #${song_id} from user: ${user_identifier}`
+      );
+    } catch (e: any) {
+      console.warn("⚠️ Dual publication to Supabase Witness Web ledger failed:", e.message);
+    }
+  }
+
+  res.json({ 
+    status: "success", 
+    message: "Shard safely received by the Thirteenth Cup.", 
+    interaction: newInteraction,
+    mutatedLyric: mutatedLyric || finalPayload?.mutatedLyric || undefined
+  });
+});
+
 // Setup Vite middleware or Static files based on environment
 async function init() {
   if (process.env.NODE_ENV !== "production") {
@@ -1180,6 +1679,40 @@ async function init() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running at http://localhost:${PORT}`);
+    
+    // Hive Resonance Heartbeat Initiation
+    if (ENABLE_HIVE_RESONANCE) {
+      const nodeUrl = process.env.APP_URL;
+      if (nodeUrl && nodeUrl !== RESONANCE_HUB_URL) {
+        const registerWithHub = async () => {
+          try {
+            const response = await fetch(`${RESONANCE_HUB_URL}/api/v1/hive/register`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                node_name: finalNodeName,
+                node_url: nodeUrl
+              })
+            });
+            if (response.ok) {
+              console.log(`📡 Hive Heartbeat: Registered "${finalNodeName}" successfully with Hub.`);
+            } else {
+              console.warn(`📡 Hive Heartbeat: Hub returned registration error ${response.status}`);
+            }
+          } catch (err: any) {
+            console.warn(`📡 Hive Heartbeat: Registration with Hub at ${RESONANCE_HUB_URL} failed: ${err.message}`);
+          }
+        };
+
+        // Delay first register by 5s to ensure full boot, then register every 3 minutes
+        setTimeout(registerWithHub, 5000);
+        setInterval(registerWithHub, 3 * 60 * 1000);
+      } else if (nodeUrl === RESONANCE_HUB_URL) {
+        console.log(`👑 Hive Central Hub: operating directory as root node for "${finalNodeName}".`);
+      } else {
+        console.log(`📡 Local Hive Mode: No APP_URL configured in .env. Clones can send shards to hub, but cannot be called back.`);
+      }
+    }
   });
 }
 
