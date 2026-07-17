@@ -1504,6 +1504,146 @@ app.get("/api/hive/weather", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/api/hive/lineage/:eventId", async (req: Request, res: Response) => {
+  const { eventId } = req.params;
+  const maxDepth = Math.max(1, Math.min(10, parseInt(req.query.maxDepth as string, 10) || 5));
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(eventId)) {
+    res.status(400).json({ error: "Invalid eventId format. Must be a valid UUID." });
+    return;
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    res.status(400).json({ error: "Supabase client is not configured on this host." });
+    return;
+  }
+
+  try {
+    const chain = [];
+    const visited = new Set<string>();
+    let currentEventId: string | null = eventId;
+    let depth = 0;
+
+    while (currentEventId && depth < maxDepth) {
+      if (visited.has(currentEventId)) {
+        chain.push({
+          id: currentEventId,
+          status: "loop_detected",
+          ledgerUri: `ledger://events/${currentEventId}`,
+          type: null,
+          createdAt: null,
+          mode: null,
+          hop: null,
+          originNode: null,
+          nodeName: null,
+          traceId: null,
+          parentEventId: null,
+          summary: "Lineage loop detected; traversal stopped"
+        });
+        break;
+      }
+      visited.add(currentEventId);
+
+      let eventData: any = null;
+      try {
+        const { data, error } = await supabase.from("events").select("*").eq("id", currentEventId).maybeSingle();
+        if (error) {
+          console.error(`Error querying event ${currentEventId}:`, error);
+        } else {
+          eventData = data;
+        }
+      } catch (err: any) {
+        console.error(`Exception querying event ${currentEventId}:`, err.message);
+      }
+
+      if (!eventData) {
+        chain.push({
+          id: currentEventId,
+          status: "missing",
+          ledgerUri: `ledger://events/${currentEventId}`,
+          type: null,
+          createdAt: null,
+          mode: null,
+          hop: null,
+          originNode: null,
+          nodeName: null,
+          traceId: null,
+          parentEventId: null,
+          summary: "Parent receipt unavailable"
+        });
+        break;
+      }
+
+      const content = eventData.content || {};
+      const metadata = eventData.metadata || {};
+      const parentId: string | null = metadata.parent_event_id || content.parent_event_id || metadata.supersedes_event_id || null;
+
+      let extractedMode = metadata.mode || content.mode || null;
+      if (!extractedMode && content.mutation_type) {
+        extractedMode = content.mutation_type;
+      }
+      if (!extractedMode && content.kind === "AUTODISCO_MUTATION_ACCEPTED") {
+        extractedMode = content.mutation_type || "METAPHOR";
+      }
+
+      let extractedSummary = content.text || content.kind || "No content summary.";
+      if (extractedSummary.length > 120) {
+        extractedSummary = extractedSummary.substring(0, 117) + "...";
+      }
+
+      chain.push({
+        id: currentEventId,
+        status: "resolved",
+        ledgerUri: `ledger://events/${currentEventId}`,
+        type: content.kind || eventData.author_kind || "UNKNOWN_EVENT",
+        createdAt: eventData.created_at || null,
+        mode: extractedMode,
+        hop: typeof metadata.hop === "number" ? metadata.hop : null,
+        originNode: metadata.origin_node || null,
+        nodeName: metadata.node_name || null,
+        traceId: metadata.trace_id || null,
+        parentEventId: parentId,
+        summary: extractedSummary
+      });
+
+      if (!parentId) {
+        break;
+      }
+
+      currentEventId = parentId;
+      depth++;
+
+      if (depth >= maxDepth) {
+        chain.push({
+          id: currentEventId,
+          status: "depth_limit",
+          ledgerUri: `ledger://events/${currentEventId}`,
+          type: null,
+          createdAt: null,
+          mode: null,
+          hop: null,
+          originNode: null,
+          nodeName: null,
+          traceId: null,
+          parentEventId: null,
+          summary: "Depth boundary reached; further ancestry not loaded"
+        });
+        break;
+      }
+    }
+
+    res.json({
+      startEventId: eventId,
+      chain
+    });
+  } catch (err: any) {
+    console.error("Error traversing lineage:", err);
+    res.status(500).json({ error: "An internal database error occurred while traversing lineage." });
+  }
+});
+
 app.post("/api/v1/tranch/interact", async (req: Request, res: Response) => {
   const { song_id, user_identifier, interaction_type, payload, origin_node, origin_node_url } = req.body;
   

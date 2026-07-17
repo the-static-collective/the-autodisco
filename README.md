@@ -1,20 +1,48 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Autodisco - Lineage Braid Spec
 
-# Run and deploy your AI Studio app
+The Lineage Braid provides a visual, inspectable genetic lineage panel tracing events backward through the shared Supabase ledger.
 
-This contains everything you need to run your app locally.
+## Server-Side Traversal Contract
 
-View your app in AI Studio: https://ai.studio/apps/77a8b4eb-fead-4f29-86eb-3079caab08cc
+### Endpoint
+`GET /api/hive/lineage/:eventId?maxDepth=5`
 
-## Run Locally
+* **Parameters:**
+  * `eventId`: Required. Must be a valid UUID corresponding to a ledger record.
+  * `maxDepth`: Optional. Clamped to `1-10` (default is `5`).
+* **Logic:**
+  1. Starts at the specified `eventId`.
+  2. Extracts the parent event ID from `metadata.parent_event_id`, `content.parent_event_id`, or `metadata.supersedes_event_id`.
+  3. Halts traversal when hitting:
+     * A root witness (no parent ID).
+     * Missing parent receipt in the ledger (`status: "missing"`).
+     * Infinite cycle loop (`status: "loop_detected"`).
+     * Depth cap boundary (`status: "depth_limit"`).
+* **Return Format:**
+```json
+{
+  "startEventId": "uuid-string",
+  "chain": [
+    {
+      "id": "uuid-string",
+      "status": "resolved" | "missing" | "loop_detected" | "depth_limit",
+      "ledgerUri": "ledger://events/<id>",
+      "type": "AUTODISCO_MUTATION_ACCEPTED" | "SUMMARY_WRITTEN" | "MESSAGE_POSTED" | "UNKNOWN_EVENT" | null,
+      "createdAt": "ISO-8601-timestamp" | null,
+      "mode": "METAPHOR" | "COMPOST" | "OBSERVED" | "DERIVED" | "INTERPRETATION" | null,
+      "hop": number | null,
+      "originNode": "string" | null,
+      "nodeName": "string" | null,
+      "traceId": "string" | null,
+      "parentEventId": "string" | null,
+      "summary": "truncated-string"
+    }
+  ]
+}
+```
 
-**Prerequisites:**  Node.js
+## Client-Side Presentation (`LineageBraid.tsx`)
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+* Fully native React/TypeScript component utilizing standard Tailwind utility classes.
+* Matches the **Digital Porch / Autodisco** tactile tactile aesthetic (`#1C1A17` background, with custom colored genetic paths: resolved ancestry `#64abbe`, active mutations `#be6447`, loop/limit/missing boundaries `#555555`).
+* Offers on-card receipt details, copies Ledger URIs, and provides complete accessibility.

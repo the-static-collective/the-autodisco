@@ -26,9 +26,11 @@ import {
   UserCheck,
   Globe,
   CornerDownRight,
-  Sparkle
+  Sparkle,
+  Layers
 } from "lucide-react";
 import { useHiveRealtime, SeedPacket } from "../lib/hiveRealtime";
+import { LineageBraid } from "./LineageBraid";
 
 interface Album {
   id: number;
@@ -128,6 +130,13 @@ export default function QuantumYarnExplorer() {
     receiptUri: string;
   } | null>(null);
   const [isPlanting, setIsPlanting] = useState<boolean>(false);
+  const [lineageBraidEventId, setLineageBraidEventId] = useState<string | null>(null);
+
+  const extractEventIdFromUri = (uri: string) => {
+    if (!uri) return null;
+    const parts = uri.split("/");
+    return parts[parts.length - 1] || null;
+  };
 
   // Hook for Supabase Realtime Channel and transient packets subscription
   const isHiveEnabled = hiveConfig?.enabled !== false;
@@ -3041,6 +3050,18 @@ export default function QuantumYarnExplorer() {
                           <div className="text-[7px] font-mono text-stone-400 uppercase tracking-widest text-center">
                             Receipt committed at: {plantedCandidates.receiptUri}
                           </div>
+                          
+                          {extractEventIdFromUri(plantedCandidates.receiptUri) && (
+                            <div className="mt-2 text-center">
+                              <button
+                                onClick={() => setLineageBraidEventId(extractEventIdFromUri(plantedCandidates.receiptUri))}
+                                className="px-2.5 py-1 text-[8px] font-mono uppercase bg-[#64abbe]/20 hover:bg-[#64abbe] hover:text-stone-950 border border-[#64abbe] text-[#64abbe] transition-all cursor-pointer inline-flex items-center gap-1 mx-auto font-bold"
+                              >
+                                <Layers className="h-2.5 w-2.5" />
+                                View Lineage Braid
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -3048,6 +3069,17 @@ export default function QuantumYarnExplorer() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {lineageBraidEventId && (
+        <div className="fixed inset-0 bg-[#141414]/90 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-fadeIn" id="lineage-braid-explorer-modal">
+          <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <LineageBraid 
+              eventId={lineageBraidEventId} 
+              onClose={() => setLineageBraidEventId(null)} 
+            />
           </div>
         </div>
       )}

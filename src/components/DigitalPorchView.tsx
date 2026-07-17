@@ -19,8 +19,10 @@ import {
   MessageSquare,
   Check,
   Flame,
-  Info
+  Info,
+  Layers
 } from "lucide-react";
+import { LineageBraid } from "./LineageBraid";
 
 interface DigitalPorchViewProps {
   weather: PorchWeather;
@@ -64,6 +66,7 @@ export default function DigitalPorchView({
 
   // For copy-to-clipboard feedback
   const [copiedNodeId, setCopiedNodeId] = useState<string | null>(null);
+  const [selectedLineageEventId, setSelectedLineageEventId] = useState<string | null>(null);
 
   // Generate gentle weather mutation descriptions
   const weatherDescriptions = [
@@ -556,7 +559,18 @@ export default function DigitalPorchView({
                     {new Date(node.timestamp).toLocaleString()}
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {node.ledgerEventId && (
+                      <button
+                        onClick={() => setSelectedLineageEventId(node.ledgerEventId || null)}
+                        className="text-[9px] font-mono uppercase border border-[#64abbe] bg-[#64abbe]/10 hover:bg-[#64abbe] hover:text-stone-900 text-[#64abbe] px-2.5 py-1 flex items-center gap-1 cursor-pointer transition-all"
+                        title="View the genetic lineage lineage backwards in the shared ledger"
+                      >
+                        <Layers className="h-3 w-3" />
+                        View Lineage
+                      </button>
+                    )}
+
                     <button
                       onClick={() => handleCopyPacket(node)}
                       className="text-[9px] font-mono uppercase border border-[#141414] bg-white text-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] px-2 py-1 flex items-center gap-1 cursor-pointer"
@@ -611,6 +625,17 @@ export default function DigitalPorchView({
           Once a tranch fully merges into the Soil, its structural remnants become the nourishing layer of active memories!
         </p>
       </div>
+
+      {selectedLineageEventId && (
+        <div className="fixed inset-0 bg-[#141414]/90 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-fadeIn" id="lineage-braid-modal">
+          <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <LineageBraid 
+              eventId={selectedLineageEventId} 
+              onClose={() => setSelectedLineageEventId(null)} 
+            />
+          </div>
+        </div>
+      )}
 
     </div>
   );
