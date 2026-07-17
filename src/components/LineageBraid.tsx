@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { motion } from "motion/react";
 import { 
   GitCommit, 
@@ -51,7 +52,7 @@ export const LineageBraid: React.FC<LineageBraidProps> = ({ eventId, onClose }) 
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/hive/lineage/${eventId}?maxDepth=8`);
+      const response = await ownerFetch(`/api/hive/lineage/${eventId}?maxDepth=8`);
       if (!response.ok) {
         const errData = await response.json();
         throw new Error(errData.error || "Failed to fetch lineage braid from ledger.");

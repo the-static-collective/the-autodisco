@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { 
   Sparkles, 
   RefreshCw, 
@@ -101,7 +102,7 @@ export default function SunoOrchestratorView({
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch("/api/suno/config");
+      const res = await ownerFetch("/api/suno/config");
       if (res.ok) {
         const data = await res.json();
         setConfig(data);
@@ -113,7 +114,7 @@ export default function SunoOrchestratorView({
 
   const fetchTasks = async () => {
     try {
-      const res = await fetch("/api/suno/tasks");
+      const res = await ownerFetch("/api/suno/tasks");
       if (res.ok) {
         const data = await res.json();
         setTasks(data);
@@ -132,7 +133,7 @@ export default function SunoOrchestratorView({
   const handleUpdateConfig = async (updated: Partial<SunoConfig>) => {
     if (!config) return;
     try {
-      const res = await fetch("/api/suno/config", {
+      const res = await ownerFetch("/api/suno/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...config, ...updated })
@@ -157,7 +158,7 @@ export default function SunoOrchestratorView({
         payload.sunoCookie = sunoCookieInput.trim();
       }
 
-      const res = await fetch("/api/suno/config", {
+      const res = await ownerFetch("/api/suno/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -177,7 +178,7 @@ export default function SunoOrchestratorView({
 
   const handleClearCookie = async () => {
     try {
-      const res = await fetch("/api/suno/config", {
+      const res = await ownerFetch("/api/suno/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -207,7 +208,7 @@ export default function SunoOrchestratorView({
         payload.sunoCookie = sunoCookieInput.trim();
       }
 
-      const res = await fetch("/api/suno/test-connection", {
+      const res = await ownerFetch("/api/suno/test-connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -239,7 +240,7 @@ export default function SunoOrchestratorView({
     setIsOracleTriggering(true);
     showStatus("info", "Prompting the Gemini Oracle to analyze lore and draft a new developmental track...");
     try {
-      const res = await fetch("/api/suno/oracle", {
+      const res = await ownerFetch("/api/suno/oracle", {
         method: "POST"
       });
       const data = await res.json();
@@ -266,7 +267,7 @@ export default function SunoOrchestratorView({
     }
     setIsCustomTriggering(true);
     try {
-      const res = await fetch("/api/suno/generate", {
+      const res = await ownerFetch("/api/suno/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

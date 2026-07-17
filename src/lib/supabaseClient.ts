@@ -36,3 +36,26 @@ export function getSpaceId(): string {
 
   return spaceId || "default-space-autodisco";
 }
+
+export async function ownerFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase client is not configured");
+  }
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error("Authentication required");
+  }
+
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${session.access_token}`);
+
+  return fetch(input, { ...init, headers });
+}

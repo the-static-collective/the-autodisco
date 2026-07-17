@@ -13,6 +13,7 @@ import FlowerOfLife from "./components/FlowerOfLife";
 import DaughterRitualView from "./components/DaughterRitualView";
 import PolyphonicPorch from "./components/PolyphonicPorch";
 import QuantumYarnExplorer from "./components/QuantumYarnExplorer";
+import { getSupabaseClient, ownerFetch } from "./lib/supabaseClient";
 import { 
   Layers, 
   GitFork, 
@@ -29,7 +30,11 @@ import {
   Radio,
   Compass,
   Music,
-  Orbit
+  Orbit,
+  Lock,
+  LogOut,
+  WifiOff,
+  CheckCircle
 } from "lucide-react";
 
 export default function App() {
@@ -74,11 +79,156 @@ export default function App() {
   const [selectedMotif, setSelectedMotif] = useState<Motif | null>(null);
   const [chatTelemetry, setChatTelemetry] = useState<any>(null);
 
-  // Load codex from Server on Mount for automatic sync with background loops / loop_runner.py
+  // Authentication & Offline States
+  const [session, setSession] = useState<any>(null);
+  const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
+  const [isOwner, setIsOwner] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccessMsg, setAuthSuccessMsg] = useState<string | null>(null);
+  const [emailInput, setEmailInput] = useState<string>("");
+  const [isSendingLink, setIsSendingLink] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
+
+  // Track offline status
   useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Track session and auth status
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setIsCheckingAuth(false);
+      return;
+    }
+
+    const checkSession = async () => {
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        await handleSessionChange(currentSession);
+      } catch (err) {
+        console.error("Error checking session:", err);
+        setIsCheckingAuth(false);
+      }
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, currentSession) => {
+      await handleSessionChange(currentSession);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleSessionChange = async (currentSession: any) => {
+    if (!currentSession) {
+      setSession(null);
+      setIsOwner(false);
+      setIsCheckingAuth(false);
+      return;
+    }
+
+    setSession(currentSession);
+
+    try {
+      // Intentionally verify the token server-side with /api/auth/me to verify owner status
+      const res = await fetch("/api/auth/me", {
+        headers: {
+          Authorization: `Bearer ${currentSession.access_token}`
+        }
+      });
+      if (res.ok) {
+        const authData = await res.json();
+        if (authData.authenticated && authData.owner) {
+          setIsOwner(true);
+          setAuthError(null);
+        } else {
+          setIsOwner(false);
+          setAuthError("This authenticated account is not authorized as the owner of this Hearth.");
+        }
+      } else {
+        setIsOwner(false);
+        setAuthError("Failed to verify owner credentials with server.");
+      }
+    } catch (err) {
+      console.error("Auth verification error:", err);
+      setIsOwner(false);
+      setAuthError("Network error while verifying ownership.");
+    } finally {
+      setIsCheckingAuth(false);
+    }
+  };
+
+  const handleSendMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setAuthError("Supabase client configuration is missing.");
+      return;
+    }
+
+    setIsSendingLink(true);
+    setAuthError(null);
+    setAuthSuccessMsg(null);
+
+    try {
+      const { error: signInError } = await supabase.auth.signInWithOtp({
+        email: emailInput,
+        options: {
+          emailRedirectTo: window.location.origin
+        }
+      });
+
+      if (signInError) {
+        setAuthError(signInError.message);
+      } else {
+        setAuthSuccessMsg("A poetic key has been cast to your email inbox. Follow the magic link inside to cross the threshold into the Hearth.");
+      }
+    } catch (err: any) {
+      setAuthError(err.message || "An unexpected error occurred.");
+    } finally {
+      setIsSendingLink(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    // Clear all cached and in-memory states
+    localStorage.removeItem("static_collective_codex");
+    localStorage.removeItem("static_collective_chat");
+    setMessages([]);
+    setChatTelemetry(null);
+    setCodex(DEFAULT_CODEX);
+    setIsOwner(false);
+    setSession(null);
+    setAuthSuccessMsg(null);
+    setAuthError(null);
+  };
+
+  // Load codex from Server when ownership is verified
+  useEffect(() => {
+    if (!isOwner) return;
+
     const refreshCodexFromServer = async () => {
       try {
-        const res = await fetch("/api/codex");
+        const res = await ownerFetch("/api/codex");
         if (res.ok) {
           const serverCodex = await res.json();
           setCodex(serverCodex);
@@ -88,24 +238,26 @@ export default function App() {
       }
     };
     refreshCodexFromServer();
-  }, []);
+  }, [isOwner]);
 
-  // Sync codex changes to localStorage AND the server's disk json file!
+  // Sync codex changes to localStorage AND the server's disk json file (if authorized!)
   useEffect(() => {
+    if (!isOwner) return;
     localStorage.setItem("static_collective_codex", JSON.stringify(codex));
     
     // Non-blocking server-side persistence
-    fetch("/api/codex", {
+    ownerFetch("/api/codex", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(codex)
-    }).catch(err => console.error("Error syncing codex to server:", err));
-  }, [codex]);
+    }).catch(err => console.error("Error syncing codex to server disk:", err));
+  }, [codex, isOwner]);
 
   // Sync chat messages to localStorage
   useEffect(() => {
+    if (!isOwner) return;
     localStorage.setItem("static_collective_chat", JSON.stringify(messages));
-  }, [messages]);
+  }, [messages, isOwner]);
 
   // Handle building dynamic system instructions prompt from active codex context
   const compileSystemPrompt = (currCodex: Codex) => {
@@ -323,7 +475,7 @@ export default function App() {
 
     try {
       const compiledPrompt = compileSystemPrompt(codex);
-      const response = await fetch("/api/chat", {
+      const response = await ownerFetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -358,7 +510,7 @@ export default function App() {
       if (finalMessages.length >= 12) {
         setIsGenerating(true);
         try {
-          const pourRes = await fetch("/api/pour", {
+          const pourRes = await ownerFetch("/api/pour", {
             method: "POST",
             headers: {
               "Content-Type": "application/json"
@@ -427,6 +579,166 @@ export default function App() {
     handleSendMessage(promptText, "gemini-3.5-flash");
   };
 
+  if (isCheckingAuth) {
+    return (
+      <div className="min-h-screen bg-[#1C1A17] text-[#E4E3E0] font-sans border-4 md:border-8 border-[#141414] flex flex-col items-center justify-center antialiased">
+        <div className="flex flex-col items-center gap-4 text-center p-6 max-w-md">
+          <div className="w-12 h-12 bg-[#F27D26] rounded-full flex items-center justify-center font-bold text-xs text-[#141414] animate-pulse">
+            S/C
+          </div>
+          <h1 className="font-mono text-xs uppercase tracking-widest text-[#F27D26]">Reading the Signals</h1>
+          <p className="text-[11px] text-[#D1CFC9]/70 font-serif italic">
+            Connecting to the shared federated ledger...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isOwner) {
+    const supabase = getSupabaseClient();
+    const configMissing = !supabase;
+
+    return (
+      <div className="min-h-screen bg-[#1C1A17] text-[#E4E3E0] font-sans border-4 md:border-8 border-[#141414] flex flex-col antialiased">
+        {/* Minimal Header */}
+        <header className="bg-[#141414] text-[#E4E3E0] border-b border-[#141414] h-14 px-4 md:px-6 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-8 h-8 bg-[#F27D26] rounded-full flex items-center justify-center font-bold text-xs text-[#141414]">
+              S/C
+            </div>
+            <div>
+              <h1 className="text-sm md:text-base font-bold tracking-tighter uppercase text-[#E4E3E0]">
+                Static Collective Hearth Gate
+              </h1>
+              <p className="text-[8px] text-[#E4E3E0]/70 font-mono uppercase tracking-widest">
+                Owner Authentication required to enter
+              </p>
+            </div>
+          </div>
+          
+          {isOffline && (
+            <div className="flex items-center gap-1.5 text-[9px] uppercase font-mono tracking-widest text-[#FF4500]">
+              <WifiOff className="h-3 w-3" /> Offline
+            </div>
+          )}
+        </header>
+
+        {/* Locked Screen Body */}
+        <main className="flex-1 flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-[#141414] border-2 border-[#E4E3E0]/20 p-8 shadow-2xl relative overflow-hidden">
+            {/* Hearth subtle glow effect */}
+            <div className="absolute -top-40 -left-40 w-80 h-80 bg-[#F27D26]/5 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="absolute -bottom-40 -right-40 w-80 h-80 bg-[#F27D26]/5 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div className="relative z-10 space-y-6">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-14 h-14 bg-[#1C1A17] border border-[#F27D26]/30 rounded-full flex items-center justify-center text-[#F27D26] mb-4">
+                  <Lock className="h-6 w-6" />
+                </div>
+                <h2 className="text-sm uppercase font-mono font-bold tracking-widest text-[#E4E3E0]">
+                  Enter the Hearth
+                </h2>
+                <p className="text-[11px] text-stone-400 font-serif leading-relaxed mt-2 max-w-xs">
+                  This system is sealed. To explore the 19-Album Canon, the speculative Universe Sandbox, and interact with the AI Neighbor Node, please authenticate.
+                </p>
+              </div>
+
+              {configMissing ? (
+                /* Configuration Missing State */
+                <div className="border border-[#F27D26] bg-[#F27D26]/10 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase text-[#F27D26] font-bold">
+                    <Info className="h-4 w-4" /> Configuration Missing
+                  </div>
+                  <p className="text-[10px] text-stone-300 font-mono uppercase leading-normal tracking-wide">
+                    Supabase connection details are missing. Please add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to your environment variables to enable owner login.
+                  </p>
+                </div>
+              ) : isOffline ? (
+                /* Offline state */
+                <div className="border border-stone-600 bg-[#1C1A17] p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase text-[#F27D26] font-bold">
+                    <WifiOff className="h-4 w-4" /> Locked &amp; Offline
+                  </div>
+                  <p className="text-[10px] text-stone-400 font-serif italic leading-normal">
+                    You are currently offline. Please restore connection to verify ownership and access the Hearth.
+                  </p>
+                </div>
+              ) : (
+                /* Login Form / Auth Status */
+                <div className="space-y-4">
+                  {session ? (
+                    /* Authenticated but not Authorized Owner state */
+                    <div className="space-y-4">
+                      <div className="border border-[#FF4500] bg-[#FF4500]/10 p-4 space-y-2">
+                        <div className="flex items-center gap-2 text-xs font-mono uppercase text-[#FF4500] font-bold">
+                          <Info className="h-4 w-4" /> Access Denied
+                        </div>
+                        <p className="text-[10px] text-stone-300 font-mono uppercase leading-normal">
+                          Authenticated as <span className="text-white font-bold">{session?.user?.email}</span>, but this account is not registered as the owner of this Hearth.
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={handleSignOut}
+                        className="w-full px-4 py-2 bg-stone-800 text-stone-200 border border-stone-700 hover:bg-stone-700 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer flex items-center justify-center gap-2 transition-all"
+                      >
+                        <LogOut className="h-3.5 w-3.5" /> Sign Out
+                      </button>
+                    </div>
+                  ) : (
+                    /* OTP Form */
+                    <form onSubmit={handleSendMagicLink} className="space-y-4">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-mono uppercase text-stone-400 tracking-wider">
+                          Owner Email
+                        </label>
+                        <input
+                          type="email"
+                          value={emailInput}
+                          onChange={(e) => setEmailInput(e.target.value)}
+                          placeholder="owner@static-collective.org"
+                          required
+                          disabled={isSendingLink}
+                          className="w-full px-3 py-2 border border-[#E4E3E0]/20 bg-[#1C1A17] text-[#E4E3E0] font-mono text-xs placeholder-stone-600 focus:outline-none focus:border-[#F27D26] transition-colors"
+                        />
+                      </div>
+
+                      {authError && (
+                        <div className="border border-[#FF4500]/50 bg-[#FF4500]/10 text-[#FF4500] p-3 text-[10px] font-mono uppercase tracking-wide">
+                          ⚠️ {authError}
+                        </div>
+                      )}
+
+                      {authSuccessMsg && (
+                        <div className="border border-[#F27D26]/50 bg-[#F27D26]/10 text-[#F27D26] p-3 text-[10px] font-mono uppercase tracking-wide leading-normal">
+                          <div className="flex items-center gap-1 mb-1 font-bold">
+                            <CheckCircle className="h-3.5 w-3.5" /> Link Sent
+                          </div>
+                          {authSuccessMsg}
+                        </div>
+                      )}
+
+                      {!authSuccessMsg && (
+                        <button
+                          type="submit"
+                          disabled={isSendingLink || !emailInput}
+                          className="w-full px-4 py-2 bg-[#F27D26] text-[#141414] hover:bg-[#F27D26]/90 disabled:opacity-50 font-mono text-xs uppercase font-bold tracking-wider cursor-pointer transition-all"
+                        >
+                          {isSendingLink ? "Sending magical key..." : "Request Access Link"}
+                        </button>
+                      )}
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans border-4 md:border-8 border-[#141414] flex flex-col antialiased">
       {/* Structural Header */}
@@ -445,13 +757,25 @@ export default function App() {
           </div>
         </div>
         
-        <div className="flex gap-6 text-[9px] uppercase font-mono tracking-widest text-[#E4E3E0]/85">
+        <div className="flex items-center gap-6 text-[9px] uppercase font-mono tracking-widest text-[#E4E3E0]/85">
+          {isOffline && (
+            <div className="flex items-center gap-1 text-[#FF4500]">
+              <WifiOff className="h-3.5 w-3.5" /> Offline Mode
+            </div>
+          )}
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-[#00FF00] shadow-[0_0_5px_#00FF00]"></span> 
             System Synced
           </div>
           <div className="hidden md:block">Context Window: 128k</div>
           <div className="hidden md:block">Active Motifs: 08</div>
+          <button
+            onClick={handleSignOut}
+            className="px-2 py-1 bg-[#1C1A17] hover:bg-stone-800 text-[#F27D26] border border-[#F27D26]/20 font-mono text-[9px] uppercase font-bold cursor-pointer transition-all flex items-center gap-1"
+            title="Sign Out of the Hearth"
+          >
+            <LogOut className="h-3 w-3" /> Sign Out
+          </button>
         </div>
       </header>
 
@@ -680,7 +1004,7 @@ export default function App() {
                 albums={codex.albums}
                 onRefreshCodex={async () => {
                   try {
-                    const res = await fetch("/api/codex");
+                    const res = await ownerFetch("/api/codex");
                     if (res.ok) {
                       const data = await res.json();
                       setCodex(data);
@@ -715,7 +1039,7 @@ export default function App() {
                 codex={codex}
                 onRefreshCodex={async () => {
                   try {
-                    const res = await fetch("/api/codex");
+                    const res = await ownerFetch("/api/codex");
                     if (res.ok) {
                       const data = await res.json();
                       setCodex(data);

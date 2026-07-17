@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { 
   Sprout, 
   Wind, 
@@ -135,7 +136,7 @@ export default function DaughterRitualView({
     setError(null);
 
     try {
-      const res = await fetch("/api/ritual/succession", {
+      const res = await ownerFetch("/api/ritual/succession", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

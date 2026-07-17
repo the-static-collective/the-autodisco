@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { 
   Orbit, 
   GitFork, 
@@ -146,12 +147,12 @@ export default function QuantumYarnExplorer() {
     errorMsg: realtimeError,
     dismissPacket,
     plantPacket
-  } = useHiveRealtime(isHiveEnabled);
+  } = useHiveRealtime(isHiveEnabled, true);
 
   const fetchHiveWeather = async () => {
     setHiveWeatherLoading(true);
     try {
-      const response = await fetch("/api/hive/weather");
+      const response = await ownerFetch("/api/hive/weather");
       if (response.ok) {
         const data = await response.json();
         setHiveWeatherReport(data.report);
@@ -182,7 +183,7 @@ export default function QuantumYarnExplorer() {
 
   const fetchHiveConfig = async () => {
     try {
-      const response = await fetch("/api/v1/hive/config");
+      const response = await ownerFetch("/api/v1/hive/config");
       if (response.ok) {
         const data = await response.json();
         setHiveConfig(data);
@@ -195,7 +196,7 @@ export default function QuantumYarnExplorer() {
   const fetchHiveNodes = async () => {
     setHiveLoading(true);
     try {
-      const response = await fetch("/api/v1/hive/nodes");
+      const response = await ownerFetch("/api/v1/hive/nodes");
       if (response.ok) {
         const data = await response.json();
         setHiveNodes(data);
@@ -204,6 +205,21 @@ export default function QuantumYarnExplorer() {
       console.error("Error fetching Hive nodes:", err);
     } finally {
       setHiveLoading(false);
+    }
+  };
+
+  const handleApproveNode = async (nodeUrl: string, status: "active" | "pending") => {
+    try {
+      const response = await ownerFetch("/api/v1/hive/nodes/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_url: nodeUrl, status })
+      });
+      if (response.ok) {
+        await fetchHiveNodes();
+      }
+    } catch (err) {
+      console.error("Error approving node:", err);
     }
   };
 
@@ -402,7 +418,7 @@ export default function QuantumYarnExplorer() {
     setLoading(true);
     try {
       // 1. Fetch albums from general codex
-      const codexRes = await fetch("/api/codex");
+      const codexRes = await ownerFetch("/api/codex");
       if (codexRes.ok) {
         const codexData = await codexRes.json();
         setAlbums(codexData.albums || []);
@@ -414,7 +430,7 @@ export default function QuantumYarnExplorer() {
       }
 
       // 2. Fetch seams
-      const seamsRes = await fetch("/api/quantum-yarn/seams");
+      const seamsRes = await ownerFetch("/api/quantum-yarn/seams");
       if (seamsRes.ok) {
         const seamsData = await seamsRes.json();
         setSeams(seamsData);
@@ -455,7 +471,7 @@ export default function QuantumYarnExplorer() {
     setReasoningLogs(["[T5 STREAM] Launching semantic query..."]);
 
     try {
-      const res = await fetch("/api/quantum-yarn/query", {
+      const res = await ownerFetch("/api/quantum-yarn/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -520,7 +536,7 @@ export default function QuantumYarnExplorer() {
     };
 
     try {
-      const res = await fetch("/api/quantum-yarn/seams", {
+      const res = await ownerFetch("/api/quantum-yarn/seams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updatedSeams)
@@ -550,7 +566,7 @@ export default function QuantumYarnExplorer() {
     };
 
     try {
-      const res = await fetch("/api/quantum-yarn/seams", {
+      const res = await ownerFetch("/api/quantum-yarn/seams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updatedSeams)
@@ -2563,6 +2579,7 @@ export default function QuantumYarnExplorer() {
                           <div className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-thin">
                             {hiveNodes.map((node: any, idx: number) => {
                               const isSelf = node.node_url === hiveConfig.nodeUrl;
+                              const isPending = node.status === "pending";
                               return (
                                 <div
                                   key={idx}
@@ -2572,12 +2589,17 @@ export default function QuantumYarnExplorer() {
                                       : "bg-stone-950 border-stone-900 hover:border-stone-800 transition-colors"
                                   }`}
                                 >
-                                  <div className="space-y-0.5 max-w-[70%]">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-                                      <span className="font-bold text-stone-300 truncate block">
+                                  <div className="space-y-0.5 max-w-[65%]">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className={`h-1.5 w-1.5 rounded-full ${isPending ? "bg-amber-500" : "bg-emerald-500"}`}></span>
+                                      <span className="font-bold text-stone-300 truncate block max-w-[120px]">
                                         {node.node_name}
                                       </span>
+                                      {isPending && (
+                                        <span className="text-[7px] text-amber-500 border border-amber-500/30 px-1 rounded-sm bg-amber-500/5 uppercase font-semibold">
+                                          Pending
+                                        </span>
+                                      )}
                                       {isSelf && (
                                         <span className="text-[7px] text-stone-500 uppercase font-bold">
                                           (Self)
@@ -2593,9 +2615,23 @@ export default function QuantumYarnExplorer() {
                                       {node.node_url}
                                     </a>
                                   </div>
-                                  <span className="text-[8px] text-stone-500">
-                                    {new Date(node.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[8px] text-stone-500">
+                                      {new Date(node.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                    {!isSelf && (
+                                      <button
+                                        onClick={() => handleApproveNode(node.node_url, isPending ? "active" : "pending")}
+                                        className={`text-[8px] px-1.5 py-0.5 rounded-sm border font-semibold cursor-pointer uppercase ${
+                                          isPending 
+                                            ? "bg-amber-500/10 border-amber-500/30 text-amber-500 hover:bg-amber-500/20" 
+                                            : "bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200"
+                                        }`}
+                                      >
+                                        {isPending ? "Approve" : "Pause"}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
@@ -2930,7 +2966,7 @@ export default function QuantumYarnExplorer() {
                           setIsPlanting(true);
                           setPlantedCandidates(null);
                           try {
-                            const res = await fetch("/api/hive/plant", {
+                            const res = await ownerFetch("/api/hive/plant", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
@@ -2979,7 +3015,7 @@ export default function QuantumYarnExplorer() {
                               <button
                                 onClick={async () => {
                                   try {
-                                    const res = await fetch("/api/hive/accept", {
+                                    const res = await ownerFetch("/api/hive/accept", {
                                       method: "POST",
                                       headers: { "Content-Type": "application/json" },
                                       body: JSON.stringify({
@@ -3018,7 +3054,7 @@ export default function QuantumYarnExplorer() {
                               <button
                                 onClick={async () => {
                                   try {
-                                    const res = await fetch("/api/hive/accept", {
+                                    const res = await ownerFetch("/api/hive/accept", {
                                       method: "POST",
                                       headers: { "Content-Type": "application/json" },
                                       body: JSON.stringify({

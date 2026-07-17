@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { 
   Music, 
   Play, 
@@ -117,13 +118,13 @@ export default function PolyphonicPorch() {
 
   const loadCodexAndSessions = async () => {
     try {
-      const theoryRes = await fetch("/api/music-theory");
+      const theoryRes = await ownerFetch("/api/music-theory");
       if (theoryRes.ok) {
         const theoryData = await theoryRes.json();
         setCodex(theoryData);
       }
 
-      const sessionsRes = await fetch("/api/music-sessions");
+      const sessionsRes = await ownerFetch("/api/music-sessions");
       if (sessionsRes.ok) {
         const sessionsData = await sessionsRes.json();
         setSessions(sessionsData);
@@ -142,7 +143,7 @@ export default function PolyphonicPorch() {
     setSeedComposition(null);
 
     try {
-      const response = await fetch("/api/generate-theory", {
+      const response = await ownerFetch("/api/generate-theory", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -200,7 +201,7 @@ export default function PolyphonicPorch() {
     if (!title) return;
 
     try {
-      const res = await fetch("/api/music-sessions", {
+      const res = await ownerFetch("/api/music-sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -238,7 +239,7 @@ export default function PolyphonicPorch() {
     }
 
     try {
-      const res = await fetch("/api/music-theory", {
+      const res = await ownerFetch("/api/music-theory", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updatedConcepts)

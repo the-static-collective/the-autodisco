@@ -11,6 +11,7 @@ import { getHiveIdentity } from "./src/lib/hiveIdentity";
 import { compileHiveTelemetry } from "./src/lib/hiveTelemetry";
 import { publishOutboundSeedPacket, plantIncomingSeed, generateUUID } from "./src/lib/serverHive";
 import { getSupabaseClient, getSpaceId } from "./src/lib/supabaseClient";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -18,6 +19,104 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+interface AuthRequest extends Request {
+  user?: any;
+  supabaseClient?: SupabaseClient;
+}
+
+function getAuthToken(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return null;
+  const parts = authHeader.split(" ");
+  if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
+    return parts[1];
+  }
+  return null;
+}
+
+function getRequestSupabaseClient(token: string): SupabaseClient | null {
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  });
+}
+
+async function verifyUserToken(token: string) {
+  const client = getRequestSupabaseClient(token);
+  if (!client) {
+    throw new Error("Supabase client is not configured on this host.");
+  }
+  const { data: { user }, error } = await client.auth.getUser();
+  if (error || !user) {
+    throw new Error(error?.message || "Invalid or expired token.");
+  }
+  return user;
+}
+
+const AUTODISCO_OWNER_ID = "4266c5e3-a560-4f7a-9980-ff9b19b494e6";
+
+function isUserOwner(user: any): boolean {
+  return user && user.id === AUTODISCO_OWNER_ID;
+}
+
+const requireOwner = async (req: Request, res: Response, next: any) => {
+  const token = getAuthToken(req);
+  if (!token) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  try {
+    const user = await verifyUserToken(token);
+    const owner = isUserOwner(user);
+    if (!owner) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    
+    // Attach user and request-scoped supabaseClient
+    (req as AuthRequest).user = user;
+    const client = getRequestSupabaseClient(token);
+    if (client) {
+      (req as AuthRequest).supabaseClient = client;
+    }
+    next();
+  } catch (err: any) {
+    res.status(401).json({ error: "Unauthorized" });
+  }
+};
+
+app.get("/api/auth/me", async (req: Request, res: Response) => {
+  const token = getAuthToken(req);
+  if (!token) {
+    res.json({ authenticated: false, owner: false });
+    return;
+  }
+  try {
+    const user = await verifyUserToken(token);
+    const owner = isUserOwner(user);
+    if (owner) {
+      res.json({
+        authenticated: true,
+        owner: true,
+        user: { id: user.id, email: user.email }
+      });
+    } else {
+      res.json({
+        authenticated: true,
+        owner: false
+      });
+    }
+  } catch (err) {
+    res.json({ authenticated: false, owner: false });
+  }
+});
 
 // Set up public/audio directory and serve it at /audio
 const audioDir = path.join(process.cwd(), "public", "audio");
@@ -112,10 +211,87 @@ function getPersistentNodeName() {
 
 const finalNodeName = getPersistentNodeName();
 
+// SECURE FEDERATION & REGISTRATION HARDENING CORE HELPERS
+const registerIpTimes: { [ip: string]: number[] } = {};
+const publicIpTimes: { [ip: string]: { [endpoint: string]: number[] } } = {};
+const TOTAL_REGISTRATION_QUOTA = 150;
+
+function checkPublicRateLimit(ip: string, endpoint: string): boolean {
+  const now = Date.now();
+  if (!publicIpTimes[ip]) {
+    publicIpTimes[ip] = {};
+  }
+  const times = publicIpTimes[ip][endpoint] || [];
+  const oneMinuteAgo = now - 60 * 1000;
+  const activeTimes = times.filter((t) => t > oneMinuteAgo);
+  if (activeTimes.length >= 30) { // Max 30 requests per minute per IP for public endpoints
+    return true;
+  }
+  activeTimes.push(now);
+  publicIpTimes[ip][endpoint] = activeTimes;
+  return false;
+}
+
+function logSecurityAuditEvent(ip: string, action: string, details: any) {
+  console.log(`[SECURITY AUDIT] [${new Date().toISOString()}] IP: ${ip} | Action: ${action} | Details: ${JSON.stringify(details)}`);
+}
+
+function isPrivateIp(ip: string): boolean {
+  const ipv4Parts = ip.split(".");
+  if (ipv4Parts.length === 4) {
+    const first = parseInt(ipv4Parts[0], 10);
+    const second = parseInt(ipv4Parts[1], 10);
+    if (first === 127) return true;
+    if (first === 10) return true;
+    if (first === 172 && second >= 16 && second <= 31) return true;
+    if (first === 192 && second === 168) return true;
+    if (first === 169 && second === 254) return true;
+    if (first === 0) return true;
+    if (first >= 224) return true;
+  }
+  
+  const ipv6Lower = ip.toLowerCase().trim();
+  if (ipv6Lower === "::1" || ipv6Lower === "::") return true;
+  if (ipv6Lower.startsWith("fe80:")) return true;
+  if (ipv6Lower.startsWith("fc00:") || ipv6Lower.startsWith("fd00:")) return true;
+  if (ipv6Lower.startsWith("ff00:")) return true;
+  
+  return false;
+}
+
+function isValidPublicHttpsUrl(urlStr: string): boolean {
+  try {
+    const parsedUrl = new URL(urlStr);
+    if (parsedUrl.protocol !== "https:") {
+      return false;
+    }
+    const host = parsedUrl.hostname.toLowerCase();
+    if (host === "localhost" || host === "localhost.localdomain" || host.endsWith(".local") || host.endsWith(".internal")) {
+      return false;
+    }
+    if (parsedUrl.port && parsedUrl.port !== "443" && parsedUrl.port !== "") {
+      return false;
+    }
+    if (isPrivateIp(host)) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function loadHiveNodes() {
   try {
     if (fs.existsSync(HIVE_NODES_FILE_PATH)) {
-      return JSON.parse(fs.readFileSync(HIVE_NODES_FILE_PATH, "utf-8"));
+      const list = JSON.parse(fs.readFileSync(HIVE_NODES_FILE_PATH, "utf-8"));
+      if (Array.isArray(list)) {
+        // Enforce safe default status for existing entries
+        return list.map((n: any) => ({
+          ...n,
+          status: n.status || "active"
+        }));
+      }
     }
   } catch (e) {
     console.error("Error reading hive nodes:", e);
@@ -360,7 +536,7 @@ if (apiKey) {
 }
 
 // API endpoint for chatbot
-app.post("/api/chat", async (req: Request, res: Response): Promise<void> => {
+app.post("/api/chat", requireOwner, async (req: Request, res: Response): Promise<void> => {
   try {
     const { messages, systemPrompt, model } = req.body;
 
@@ -520,7 +696,7 @@ You are in the sweet spot of directed emergence. Maintain your current soft post
 });
 
 // Pouring the Thirteenth Cup memory endpoint
-app.post("/api/pour", async (req: Request, res: Response): Promise<void> => {
+app.post("/api/pour", requireOwner, async (req: Request, res: Response): Promise<void> => {
   try {
     const { messages, systemPrompt, model } = req.body;
 
@@ -566,7 +742,7 @@ ${historyText}`;
 });
 
 // Birth Ceremony endpoint
-app.post("/api/birth-ceremony", async (req: Request, res: Response): Promise<void> => {
+app.post("/api/birth-ceremony", requireOwner, async (req: Request, res: Response): Promise<void> => {
   try {
     const { noticing, weather, axioms, albums, branches } = req.body;
 
@@ -655,7 +831,7 @@ Perform a proper birth ceremony. Your task is to output structured details mappi
 });
 
 // Daughter Succession Ritual endpoint
-app.post("/api/ritual/succession", async (req: Request, res: Response): Promise<void> => {
+app.post("/api/ritual/succession", requireOwner, async (req: Request, res: Response): Promise<void> => {
   try {
     const { brokenInvariant, noise, currentCentroidWeight } = req.body;
 
@@ -749,18 +925,18 @@ You must output a structured evaluation including:
 });
 
 // Codex endpoints
-app.get("/api/codex", (req: Request, res: Response) => {
+app.get("/api/codex", requireOwner, (req: Request, res: Response) => {
   const codex = loadCodexFromFile();
   res.json(codex);
 });
 
-app.post("/api/codex", (req: Request, res: Response) => {
+app.post("/api/codex", requireOwner, (req: Request, res: Response) => {
   saveCodexToFile(req.body);
   res.json({ success: true });
 });
 
 // Suno endpoints
-app.get("/api/suno/config", (req: Request, res: Response) => {
+app.get("/api/suno/config", requireOwner, (req: Request, res: Response) => {
   const maskedCookie = sunoConfig.sunoCookie 
     ? sunoConfig.sunoCookie.substring(0, Math.min(20, sunoConfig.sunoCookie.length)) + "..." + (sunoConfig.sunoCookie.length > 20 ? ` (${sunoConfig.sunoCookie.length} chars)` : "")
     : "";
@@ -772,7 +948,7 @@ app.get("/api/suno/config", (req: Request, res: Response) => {
   });
 });
 
-app.post("/api/suno/config", (req: Request, res: Response) => {
+app.post("/api/suno/config", requireOwner, (req: Request, res: Response) => {
   const { sunoApiUrl, simulationMode, sunoCookie, clearCookie } = req.body;
   if (sunoApiUrl !== undefined) sunoConfig.sunoApiUrl = sunoApiUrl;
   if (simulationMode !== undefined) sunoConfig.simulationMode = !!simulationMode;
@@ -799,7 +975,7 @@ app.post("/api/suno/config", (req: Request, res: Response) => {
   });
 });
 
-app.post("/api/suno/test-connection", async (req: Request, res: Response) => {
+app.post("/api/suno/test-connection", requireOwner, async (req: Request, res: Response) => {
   const { sunoApiUrl, sunoCookie } = req.body;
   
   const targetUrl = sunoApiUrl || sunoConfig.sunoApiUrl;
@@ -841,11 +1017,11 @@ app.post("/api/suno/test-connection", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/suno/tasks", (req: Request, res: Response) => {
+app.get("/api/suno/tasks", requireOwner, (req: Request, res: Response) => {
   res.json(sunoTasks);
 });
 
-app.post("/api/suno/generate", (req: Request, res: Response) => {
+app.post("/api/suno/generate", requireOwner, (req: Request, res: Response) => {
   const { title, tags, lyrics } = req.body;
   if (!title || !tags || !lyrics) {
     res.status(400).json({ error: "Missing required fields: title, tags, or lyrics." });
@@ -873,7 +1049,7 @@ app.post("/api/suno/generate", (req: Request, res: Response) => {
   });
 });
 
-app.post("/api/suno/oracle", async (req: Request, res: Response): Promise<void> => {
+app.post("/api/suno/oracle", requireOwner, async (req: Request, res: Response): Promise<void> => {
   try {
     if (!ai) {
       res.status(500).json({ 
@@ -1013,20 +1189,20 @@ function saveMusicSessions(data: any) {
   }
 }
 
-app.get("/api/music-theory", (req: Request, res: Response) => {
+app.get("/api/music-theory", requireOwner, (req: Request, res: Response) => {
   res.json(loadMusicTheory());
 });
 
-app.post("/api/music-theory", (req: Request, res: Response) => {
+app.post("/api/music-theory", requireOwner, (req: Request, res: Response) => {
   saveMusicTheory(req.body);
   res.json({ success: true });
 });
 
-app.get("/api/music-sessions", (req: Request, res: Response) => {
+app.get("/api/music-sessions", requireOwner, (req: Request, res: Response) => {
   res.json(loadMusicSessions());
 });
 
-app.post("/api/music-sessions", (req: Request, res: Response) => {
+app.post("/api/music-sessions", requireOwner, (req: Request, res: Response) => {
   const sessions = loadMusicSessions();
   const newSession = {
     id: "session_" + Date.now(),
@@ -1084,7 +1260,7 @@ async function generateWithRetry(
 }
 
 // 3-LAYER COGNITIVE T5 GENERATION API
-app.post("/api/generate-theory", async (req: Request, res: Response) => {
+app.post("/api/generate-theory", requireOwner, async (req: Request, res: Response) => {
   const { prompt, keyCenter, scaleType, bpm } = req.body;
   const reasoningLogs: string[] = [];
 
@@ -1230,16 +1406,16 @@ ${JSON.stringify(codex)}`;
 });
 
 // QUANTUM YARN SYSTEM ENDPOINTS
-app.get("/api/quantum-yarn/seams", (req: Request, res: Response) => {
+app.get("/api/quantum-yarn/seams", requireOwner, (req: Request, res: Response) => {
   res.json(loadSeams());
 });
 
-app.post("/api/quantum-yarn/seams", (req: Request, res: Response) => {
+app.post("/api/quantum-yarn/seams", requireOwner, (req: Request, res: Response) => {
   saveSeams(req.body);
   res.json({ success: true });
 });
 
-app.post("/api/quantum-yarn/query", async (req: Request, res: Response) => {
+app.post("/api/quantum-yarn/query", requireOwner, async (req: Request, res: Response) => {
   const { queryText, k } = req.body;
   try {
     const codex = loadCodexFromFile();
@@ -1257,11 +1433,47 @@ app.post("/api/quantum-yarn/query", async (req: Request, res: Response) => {
 
 // LOOPIT TRANCHNODES & BRIDGES ENDPOINTS
 app.get("/api/v1/tranch/interactions", (req: Request, res: Response) => {
-  res.json(loadLoopItInteractionsFromFile());
+  const ip = req.ip || "unknown";
+  if (checkPublicRateLimit(ip, "interactions_get")) {
+    res.status(429).json({ error: "Too many requests." });
+    return;
+  }
+
+  const allInteractions = loadLoopItInteractionsFromFile();
+  const sorted = [...allInteractions].sort((a: any, b: any) => 
+    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
+  
+  // Cap results at 50 to prevent unbounded memory/resource consumption
+  const capped = sorted.slice(0, 50);
+
+  // Strictly return only public non-sensitive fields (no annotations, lyrics, or user identities)
+  const publicInteractions = capped.map((item: any) => ({
+    song_id: typeof item.song_id === "number" ? item.song_id : undefined,
+    interaction_type: typeof item.interaction_type === "string" ? item.interaction_type.slice(0, 50) : undefined,
+    timestamp: typeof item.timestamp === "string" ? item.timestamp.slice(0, 50) : undefined,
+    payload: item.payload ? {
+      text: typeof item.payload.text === "string" ? item.payload.text.slice(0, 200) : undefined,
+      mutatedLyric: typeof item.payload.mutatedLyric === "string" ? item.payload.mutatedLyric.slice(0, 200) : undefined
+    } : {}
+  }));
+
+  res.json(publicInteractions);
 });
 
 app.get("/api/v1/tranch/:song_id", (req: Request, res: Response) => {
-  const songId = parseInt(req.params.song_id);
+  const ip = req.ip || "unknown";
+  if (checkPublicRateLimit(ip, "tranch_get")) {
+    res.status(429).json({ error: "Too many requests." });
+    return;
+  }
+
+  const songId = parseInt(req.params.song_id, 10);
+  if (isNaN(songId)) {
+    res.status(400).json({ error: "Invalid song ID format." });
+    return;
+  }
+
   const codex = loadCodexFromFile();
   const track = codex.albums?.find((a: any) => a.id === songId);
   
@@ -1270,11 +1482,12 @@ app.get("/api/v1/tranch/:song_id", (req: Request, res: Response) => {
     return;
   }
   
+  // Return strictly public-facing subset, removing lyrics, sensitive annotations, and internal user IDs
   res.json({
     id: track.id,
-    title: track.title,
-    notes: track.notes,
-    era: track.era || "Unknown",
+    title: typeof track.title === "string" ? track.title.slice(0, 100) : "Untitled Track",
+    notes: typeof track.notes === "string" ? track.notes.slice(0, 200) : "",
+    era: typeof track.era === "string" ? track.era.slice(0, 50) : "Unknown",
     ground_signal: "022100",
     hospitable_invariant: "The door stays open."
   });
@@ -1282,41 +1495,108 @@ app.get("/api/v1/tranch/:song_id", (req: Request, res: Response) => {
 
 // HIVE RESO COLLECTIVE DIRECTORY ENDPOINTS
 app.post("/api/v1/hive/register", (req: Request, res: Response) => {
+  const ip = req.ip || "unknown";
+  
+  // Rate limiting & Quota verification
+  const now = Date.now();
+  const times = registerIpTimes[ip] || [];
+  const oneMinuteAgo = now - 60 * 1000;
+  const activeTimes = times.filter((t) => t > oneMinuteAgo);
+  if (activeTimes.length >= 3) {
+    logSecurityAuditEvent(ip, "REGISTRATION_RATE_LIMIT_EXCEEDED", { count: activeTimes.length });
+    res.status(429).json({ error: "Too many requests." });
+    return;
+  }
+  activeTimes.push(now);
+  registerIpTimes[ip] = activeTimes;
+
+  // Max payload size check
+  if (JSON.stringify(req.body).length > 2048) {
+    logSecurityAuditEvent(ip, "REGISTRATION_PAYLOAD_TOO_LARGE", {});
+    res.status(400).json({ error: "Payload too large." });
+    return;
+  }
+
   const { node_name, node_url } = req.body;
-  if (!node_name || !node_url) {
-    res.status(400).json({ error: "Missing node_name or node_url" });
+  
+  // Strict Validation: Node name length & charset (alphanumeric, spaces, underscores, dashes, periods)
+  if (
+    typeof node_name !== "string" || 
+    node_name.length < 3 || 
+    node_name.length > 50 ||
+    !/^[a-zA-Z0-9\s\-\.\_\(\)]+$/.test(node_name)
+  ) {
+    logSecurityAuditEvent(ip, "REGISTRATION_INVALID_NODE_NAME", { node_name });
+    res.status(400).json({ error: "Invalid node name format." });
+    return;
+  }
+
+  // Strict Validation: Public HTTPS URL only, no localhost/private IP/nonstandard port
+  if (!node_url || typeof node_url !== "string" || !isValidPublicHttpsUrl(node_url)) {
+    logSecurityAuditEvent(ip, "REGISTRATION_INVALID_NODE_URL", { node_url });
+    res.status(400).json({ error: "Invalid public HTTPS node URL." });
     return;
   }
 
   const nodes = loadHiveNodes();
-  const now = new Date().toISOString();
+  if (nodes.length >= TOTAL_REGISTRATION_QUOTA) {
+    logSecurityAuditEvent(ip, "REGISTRATION_QUOTA_EXCEEDED", {});
+    res.status(400).json({ error: "Hearth registration quota reached." });
+    return;
+  }
 
-  // Find if node already registered by URL
+  const registeredAt = new Date().toISOString();
+  
+  // Node registration stored as status = "pending" by default
   const existingIndex = nodes.findIndex((n: any) => n.node_url === node_url);
   if (existingIndex > -1) {
     nodes[existingIndex].node_name = node_name;
-    nodes[existingIndex].last_seen = now;
+    nodes[existingIndex].last_seen = registeredAt;
   } else {
-    nodes.push({ node_name, node_url, last_seen: now });
+    nodes.push({ 
+      node_name, 
+      node_url, 
+      status: "pending", // ALWAYS pending on new registration
+      registered_at: registeredAt,
+      last_seen: registeredAt 
+    });
   }
 
   saveHiveNodes(nodes);
-  res.json({ status: "success", message: `Node "${node_name}" registered at the Hearth.` });
-});
+  logSecurityAuditEvent(ip, "NODE_REGISTERED_PENDING", { node_name, node_url });
 
-app.get("/api/v1/hive/nodes", (req: Request, res: Response) => {
-  const nodes = loadHiveNodes();
-  const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
-  
-  // Filter only recently active nodes
-  const activeNodes = nodes.filter((n: any) => {
-    return new Date(n.last_seen).getTime() > fifteenMinutesAgo;
+  // Strictly do not return node lists, internal IDs, configuration, telemetry, or tokens
+  res.json({ 
+    status: "success", 
+    message: "Node registration received and is pending owner approval." 
   });
-
-  res.json(activeNodes);
 });
 
-app.get("/api/v1/hive/config", (req: Request, res: Response) => {
+app.get("/api/v1/hive/nodes", requireOwner, (req: Request, res: Response) => {
+  const nodes = loadHiveNodes();
+  res.json(nodes);
+});
+
+app.post("/api/v1/hive/nodes/approve", requireOwner, (req: Request, res: Response) => {
+  const { node_url, status } = req.body;
+  if (!node_url || !status) {
+    res.status(400).json({ error: "Missing node_url or status" });
+    return;
+  }
+  const nodes = loadHiveNodes();
+  const node = nodes.find((n: any) => n.node_url === node_url);
+  if (!node) {
+    res.status(404).json({ error: "Node not found." });
+    return;
+  }
+  node.status = status === "active" ? "active" : "pending";
+  node.last_seen = new Date().toISOString();
+  saveHiveNodes(nodes);
+  logSecurityAuditEvent(req.ip || "unknown", "NODE_STATUS_CHANGE", { node_url, status });
+  res.json({ success: true, node });
+});
+
+app.get("/api/v1/hive/config", requireOwner, (req: Request, res: Response) => {
   const nodeUrl = process.env.APP_URL;
   res.json({
     enabled: ENABLE_HIVE_RESONANCE,
@@ -1328,10 +1608,10 @@ app.get("/api/v1/hive/config", (req: Request, res: Response) => {
 });
 
 // WITNESS WEB: SUPABASE-BASED FEDERATED HIVE ENDPOINTS
-app.post("/api/hive/telemetry", async (req: Request, res: Response) => {
+app.post("/api/hive/telemetry", requireOwner, async (req: Request, res: Response) => {
   const { event_type, text, description } = req.body;
   const identity = getHiveIdentity();
-  const supabase = getSupabaseClient();
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
   const spaceId = getSpaceId();
   
   const resolvedType = event_type === "SUMMARY_WRITTEN" ? "SUMMARY_WRITTEN" : "MESSAGE_POSTED";
@@ -1386,7 +1666,7 @@ app.post("/api/hive/telemetry", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/hive/plant", async (req: Request, res: Response) => {
+app.post("/api/hive/plant", requireOwner, async (req: Request, res: Response) => {
   const { packet, note } = req.body;
   if (!packet) {
     res.status(400).json({ error: "Missing required field: packet" });
@@ -1402,7 +1682,7 @@ app.post("/api/hive/plant", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/hive/accept", async (req: Request, res: Response) => {
+app.post("/api/hive/accept", requireOwner, async (req: Request, res: Response) => {
   const { text, type, originNode, parentEventId, parentTraceId, parentHop } = req.body;
   if (!text) {
     res.status(400).json({ error: "Missing required field: text" });
@@ -1417,7 +1697,7 @@ app.post("/api/hive/accept", async (req: Request, res: Response) => {
 
     // 1. If hive resonance is enabled and Supabase is configured, write the successor event first
     const identity = getHiveIdentity();
-    const supabase = getSupabaseClient();
+    const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
     const spaceId = getSpaceId();
     const now = new Date().toISOString();
     const localEventId = generateUUID();
@@ -1494,7 +1774,7 @@ app.post("/api/hive/accept", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/hive/weather", async (req: Request, res: Response) => {
+app.get("/api/hive/weather", requireOwner, async (req: Request, res: Response) => {
   try {
     const result = await compileHiveTelemetry();
     res.json(result);
@@ -1504,7 +1784,7 @@ app.get("/api/hive/weather", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/hive/lineage/:eventId", async (req: Request, res: Response) => {
+app.get("/api/hive/lineage/:eventId", requireOwner, async (req: Request, res: Response) => {
   const { eventId } = req.params;
   const maxDepth = Math.max(1, Math.min(10, parseInt(req.query.maxDepth as string, 10) || 5));
 
@@ -1514,7 +1794,7 @@ app.get("/api/hive/lineage/:eventId", async (req: Request, res: Response) => {
     return;
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
   if (!supabase) {
     res.status(400).json({ error: "Supabase client is not configured on this host." });
     return;
@@ -1645,13 +1925,57 @@ app.get("/api/hive/lineage/:eventId", async (req: Request, res: Response) => {
 });
 
 app.post("/api/v1/tranch/interact", async (req: Request, res: Response) => {
-  const { song_id, user_identifier, interaction_type, payload, origin_node, origin_node_url } = req.body;
-  
-  if (!song_id || !user_identifier || !interaction_type) {
-    res.status(400).json({ error: "Missing required fields: song_id, user_identifier, interaction_type" });
+  const ip = req.ip || "unknown";
+  if (checkPublicRateLimit(ip, "tranch_interact_post")) {
+    res.status(429).json({ error: "Too many requests." });
     return;
   }
+
+  // Max payload size
+  if (JSON.stringify(req.body).length > 2048) {
+    res.status(400).json({ error: "Payload too large." });
+    return;
+  }
+
+  const { song_id, user_identifier, interaction_type, payload, origin_node, origin_node_url } = req.body;
   
+  // Strict schema validation
+  const parsedSongId = parseInt(song_id, 10);
+  if (isNaN(parsedSongId)) {
+    res.status(400).json({ error: "Invalid song_id." });
+    return;
+  }
+
+  if (typeof user_identifier !== "string" || user_identifier.length > 50 || !/^[a-zA-Z0-9\s\-\.\_\@\(\)\[\]]+$/.test(user_identifier)) {
+    res.status(400).json({ error: "Invalid user_identifier format." });
+    return;
+  }
+
+  const allowedTypes = ["composted_regret", "resonance_shard", "view_tranch", "play_audio"];
+  if (typeof interaction_type !== "string" || !allowedTypes.includes(interaction_type)) {
+    res.status(400).json({ error: "Invalid interaction_type." });
+    return;
+  }
+
+  if (payload && typeof payload !== "object") {
+    res.status(400).json({ error: "Invalid payload format." });
+    return;
+  }
+
+  // Safe nested payload parameters (strictly public fields, no sensitive information)
+  const safePayload: any = {};
+  if (payload) {
+    if (typeof payload.text === "string") {
+      safePayload.text = payload.text.slice(0, 300);
+    }
+    if (typeof payload.mutatedLyric === "string") {
+      safePayload.mutatedLyric = payload.mutatedLyric.slice(0, 300);
+    }
+    if (typeof payload.notes === "string") {
+      safePayload.notes = payload.notes.slice(0, 200);
+    }
+  }
+
   const interactions = loadLoopItInteractionsFromFile();
   
   let mutatedLyric = "";
@@ -1662,7 +1986,7 @@ We are composting a user's heavy regret, failure draft, or unsaid word in our lo
 Translate this regret into a beautiful, hopeful, unvarnished lyric mutation of 2-3 lines.
 Prove that "the error was the entrance". Keep it raw, organic, and grounded in the prairie wind, soil, wooden tables, and morning coffee. Do not make it cliché or flowery. Keep it incredibly simple and honest.
 
-Regret to compost: "${payload?.text || ""}"
+Regret to compost: "${safePayload?.text || ""}"
 
 Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
 
@@ -1678,18 +2002,17 @@ Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
     }
   }
 
-  // If regret was already mutated by the origin node, use that mutation to avoid re-generating
   const finalPayload = interaction_type === "composted_regret"
-    ? { ...payload, mutatedLyric: mutatedLyric || payload?.mutatedLyric || "The error was the entrance.\nEven in the dark loam, the seed remembers the light." }
-    : payload || {};
+    ? { ...safePayload, mutatedLyric: mutatedLyric || safePayload?.mutatedLyric || "The error was the entrance.\nEven in the dark loam, the seed remembers the light." }
+    : safePayload || {};
 
   const finalUserIdentifier = origin_node 
-    ? `${user_identifier} [via ${origin_node}]` 
+    ? `${user_identifier} [via ${typeof origin_node === "string" ? origin_node.slice(0, 50) : "unknown"}]` 
     : user_identifier;
 
   const newInteraction = {
     id: `loopit_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-    song_id: parseInt(song_id),
+    song_id: parsedSongId,
     user_identifier: finalUserIdentifier,
     interaction_type,
     payload: finalPayload,
@@ -1713,15 +2036,16 @@ Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
         const originUrl = origin_node_url;
         const activeNodes = loadHiveNodes().filter((n: any) => {
           const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
-          return new Date(n.last_seen).getTime() > fifteenMinutesAgo && n.node_url !== originUrl;
+          return n.status === "active" && new Date(n.last_seen).getTime() > fifteenMinutesAgo && n.node_url !== originUrl;
         });
 
         activeNodes.forEach((peer: any) => {
           fetch(`${peer.node_url}/api/v1/tranch/interact`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            redirect: "error",
             body: JSON.stringify({
-              song_id,
+              song_id: parsedSongId,
               user_identifier,
               interaction_type,
               payload: finalPayload,
@@ -1739,15 +2063,16 @@ Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
         // We are the hub, broadcast to all our registered peer nodes
         const activeNodes = loadHiveNodes().filter((n: any) => {
           const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
-          return new Date(n.last_seen).getTime() > fifteenMinutesAgo;
+          return n.status === "active" && new Date(n.last_seen).getTime() > fifteenMinutesAgo;
         });
 
         activeNodes.forEach((peer: any) => {
           fetch(`${peer.node_url}/api/v1/tranch/interact`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            redirect: "error",
             body: JSON.stringify({
-              song_id,
+              song_id: parsedSongId,
               user_identifier,
               interaction_type,
               payload: finalPayload,
@@ -1763,8 +2088,9 @@ Output only the 2-3 line lyric mutation, with no other commentary or labels.`;
         fetch(`${RESONANCE_HUB_URL}/api/v1/tranch/interact`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          redirect: "error",
           body: JSON.stringify({
-            song_id,
+            song_id: parsedSongId,
             user_identifier,
             interaction_type,
             payload: finalPayload,

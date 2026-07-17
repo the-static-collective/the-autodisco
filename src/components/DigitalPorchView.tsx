@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { ownerFetch } from "../lib/supabaseClient";
 import { PorchWeather, SoilAxiom, PorchNode, Album, BranchingIdea } from "../types";
 import VascularHearth from "./VascularHearth";
 import { 
@@ -109,7 +110,7 @@ export default function DigitalPorchView({
     setError(null);
 
     try {
-      const response = await fetch("/api/birth-ceremony", {
+      const response = await ownerFetch("/api/birth-ceremony", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

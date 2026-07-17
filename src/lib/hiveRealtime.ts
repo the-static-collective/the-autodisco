@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { getSupabaseClient } from "./supabaseClient";
+import { getSupabaseClient, ownerFetch } from "./supabaseClient";
 
 export interface SeedPacket {
   id: string;
@@ -17,14 +17,20 @@ export interface SeedPacket {
   };
 }
 
-export type ConnectionState = "offline" | "connecting" | "live" | "error";
+export type ConnectionState = "offline" | "connecting" | "live" | "error" | "locked";
 
-export function useHiveRealtime(hiveEnabled: boolean) {
+export function useHiveRealtime(hiveEnabled: boolean, isAuthorized: boolean) {
   const [connectionState, setConnectionState] = useState<ConnectionState>("offline");
   const [packets, setPackets] = useState<SeedPacket[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isAuthorized) {
+      setConnectionState("locked");
+      setPackets([]);
+      return;
+    }
+
     if (!hiveEnabled) {
       setConnectionState("offline");
       return;
@@ -101,7 +107,7 @@ export function useHiveRealtime(hiveEnabled: boolean) {
     return () => {
       channel.unsubscribe();
     };
-  }, [hiveEnabled]);
+  }, [hiveEnabled, isAuthorized]);
 
   const dismissPacket = useCallback((id: string) => {
     setPackets((prev) => prev.filter((p) => p.id !== id));
@@ -109,7 +115,7 @@ export function useHiveRealtime(hiveEnabled: boolean) {
 
   const plantPacket = useCallback(async (packet: SeedPacket, note?: string) => {
     try {
-      const response = await fetch("/api/hive/plant", {
+      const response = await ownerFetch("/api/hive/plant", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
