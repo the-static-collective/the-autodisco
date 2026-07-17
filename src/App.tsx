@@ -88,6 +88,16 @@ export default function App() {
   const [emailInput, setEmailInput] = useState<string>("");
   const [isSendingLink, setIsSendingLink] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
+  const [countdown, setCountdown] = useState<number>(0);
+
+  // Magic Link countdown timer
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setInterval(() => {
+      setCountdown((prev) => prev - 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [countdown]);
 
   // Track offline status
   useEffect(() => {
@@ -173,7 +183,7 @@ export default function App() {
 
   const handleSendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailInput) return;
+    if (!emailInput || countdown > 0) return;
 
     const supabase = getSupabaseClient();
     if (!supabase) {
@@ -197,6 +207,7 @@ export default function App() {
         setAuthError(signInError.message);
       } else {
         setAuthSuccessMsg("A poetic key has been cast to your email inbox. Follow the magic link inside to cross the threshold into the Hearth.");
+        setCountdown(60);
       }
     } catch (err: any) {
       setAuthError(err.message || "An unexpected error occurred.");
@@ -711,21 +722,48 @@ export default function App() {
                       )}
 
                       {authSuccessMsg && (
-                        <div className="border border-[#F27D26]/50 bg-[#F27D26]/10 text-[#F27D26] p-3 text-[10px] font-mono uppercase tracking-wide leading-normal">
-                          <div className="flex items-center gap-1 mb-1 font-bold">
-                            <CheckCircle className="h-3.5 w-3.5" /> Link Sent
+                        <div className="space-y-3">
+                          <div className="border border-[#F27D26]/50 bg-[#F27D26]/10 text-[#F27D26] p-3 text-[10px] font-mono uppercase tracking-wide leading-normal">
+                            <div className="flex items-center gap-1 mb-1 font-bold">
+                              <CheckCircle className="h-3.5 w-3.5" /> Link Sent
+                            </div>
+                            {authSuccessMsg}
                           </div>
-                          {authSuccessMsg}
+
+                          {countdown > 0 && (
+                            <div className="border border-amber-500/30 bg-[#F27D26]/5 text-amber-400 p-3 text-[10px] font-mono uppercase tracking-wide leading-normal">
+                              <div className="font-bold flex items-center gap-1.5 uppercase">
+                                <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>
+                                Check your inbox—do not resend yet
+                              </div>
+                              <div className="mt-1 text-stone-400">
+                                Temporary lock active. A new link may be requested in <span className="text-[#F27D26] font-bold">{countdown}s</span>.
+                              </div>
+                            </div>
+                          )}
+
+                          {countdown === 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAuthSuccessMsg(null);
+                                setAuthError(null);
+                              }}
+                              className="w-full px-4 py-2 bg-[#E4E3E0]/10 hover:bg-[#E4E3E0]/20 text-[#E4E3E0] font-mono text-xs uppercase font-bold tracking-wider cursor-pointer transition-all border border-[#E4E3E0]/20"
+                            >
+                              Request another link
+                            </button>
+                          )}
                         </div>
                       )}
 
                       {!authSuccessMsg && (
                         <button
                           type="submit"
-                          disabled={isSendingLink || !emailInput}
+                          disabled={isSendingLink || !emailInput || countdown > 0}
                           className="w-full px-4 py-2 bg-[#F27D26] text-[#141414] hover:bg-[#F27D26]/90 disabled:opacity-50 font-mono text-xs uppercase font-bold tracking-wider cursor-pointer transition-all"
                         >
-                          {isSendingLink ? "Sending magical key..." : "Request Access Link"}
+                          {isSendingLink ? "Sending magical key..." : countdown > 0 ? `Resend active in ${countdown}s` : "Request Access Link"}
                         </button>
                       )}
                     </form>
