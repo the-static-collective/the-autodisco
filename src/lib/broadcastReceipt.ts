@@ -226,6 +226,18 @@ export function validateBroadcastSource(
   }
 
   const artifact = record(content.artifact);
+  const artifactData = nonEmptyString(artifact?.data);
+  const artifactByteLength = artifact?.byte_length;
+  if (
+    artifact?.storage !== "inline-ledger-base64" ||
+    artifact?.encoding !== "base64" ||
+    !artifactData ||
+    typeof artifactByteLength !== "number" ||
+    artifactByteLength <= 0
+  ) {
+    errors.push("rendered audio source must preserve its bounded inline audio artifact");
+  }
+
   const audioSha256 = nonEmptyString(artifact?.sha256);
   if (!audioSha256 || !/^[0-9a-f]{64}$/i.test(audioSha256)) {
     errors.push("rendered audio source must preserve a full output SHA-256");
