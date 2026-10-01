@@ -49,6 +49,7 @@ const firstResponse = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   metadata: {
     source: "autodisco_pair_listen",
+    pair_listen_version: "autodisco-pair-listen/0.1",
   },
   content: {
     kind: "AUTODISCO_FIRST_RESPONSE_SEALED",
@@ -156,6 +157,21 @@ assert.equal(
 assert.equal(
   validateVoiceRenderRequest(
     { ...firstResponse, content: { ...firstResponse.content, kind: "AUTODISCO_EXCHANGE_CLOSED" } },
+    stationEvent,
+    "GENERIC_NARRATION",
+    "",
+    sourceTextHash,
+    stationPacketHash,
+  ).state,
+  "REFUSED",
+);
+
+assert.equal(
+  validateVoiceRenderRequest(
+    {
+      ...firstResponse,
+      metadata: { ...firstResponse.metadata, pair_listen_version: "forged-version" },
+    },
     stationEvent,
     "GENERIC_NARRATION",
     "",
