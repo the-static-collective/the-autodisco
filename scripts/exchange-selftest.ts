@@ -120,6 +120,9 @@ const exchangeReceipt = {
   metadata: {
     source: "autodisco_exchange",
     exchange_version: EXCHANGE_VERSION,
+    parent_event_id: "44444444-4444-4444-8444-444444444444",
+    pair_parent_event_id: "33333333-3333-4333-8333-333333333333",
+    station_parent_event_id: "22222222-2222-4222-8222-222222222222",
   },
   content: {
     kind: "AUTODISCO_EXCHANGE_OPENED",
@@ -138,6 +141,14 @@ assert.equal(
   descriptorFromExchangeReceipt({
     ...exchangeReceipt,
     content: { ...exchangeReceipt.content, broadcast_status: "BROADCAST" },
+  }),
+  null,
+);
+
+assert.equal(
+  descriptorFromExchangeReceipt({
+    ...exchangeReceipt,
+    metadata: { ...exchangeReceipt.metadata, pair_parent_event_id: "wrong-pair" },
   }),
   null,
 );
