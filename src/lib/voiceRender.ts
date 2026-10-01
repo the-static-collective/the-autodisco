@@ -4,6 +4,8 @@ import {
   type StationPacket,
 } from "./stationPacket";
 import type { ReleasePermissions } from "./releaseGate";
+import { PAIR_LISTEN_VERSION } from "./pairListen";
+import { EXCHANGE_VERSION } from "./exchange";
 
 export const VOICE_RENDER_VERSION = "autodisco-voice-render-request/0.1" as const;
 
@@ -125,12 +127,14 @@ export function validateVoiceRenderRequest(
     kind === "AUTODISCO_FIRST_RESPONSE_SEALED" &&
     sourceContent?.mode === "INTERPRETATION" &&
     sourceContent?.sealed === true &&
-    sourceMetadata?.source === "autodisco_pair_listen";
+    sourceMetadata?.source === "autodisco_pair_listen" &&
+    sourceMetadata?.pair_listen_version === PAIR_LISTEN_VERSION;
 
   const exchangeReply =
     kind === "AUTODISCO_EXCHANGE_REPLY" &&
     sourceContent?.mode === "INTERPRETATION" &&
-    sourceMetadata?.source === "autodisco_exchange";
+    sourceMetadata?.source === "autodisco_exchange" &&
+    sourceMetadata?.exchange_version === EXCHANGE_VERSION;
 
   if (!firstResponse && !exchangeReply) {
     errors.push("source contribution must be a sealed first response or exchange reply");
