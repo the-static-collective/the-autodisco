@@ -219,3 +219,98 @@ export function exchangeClosed(
   const replied = new Set(repliedSessionIds);
   return descriptor.first_responses.every((response) => replied.has(response.session_id));
 }
+
+
+export function descriptorFromExchangeReceipt(event: LedgerEventLike): ExchangeDescriptor | null {
+  const content = record(event?.content);
+  const metadata = record(event?.metadata);
+  const descriptor = record(content?.descriptor);
+
+  if (
+    content?.kind !== "AUTODISCO_EXCHANGE_OPENED" ||
+    content?.mode !== "OBSERVED" ||
+    content?.broadcast_status !== "NOT_BROADCAST" ||
+    metadata?.source !== "autodisco_exchange" ||
+    metadata?.exchange_version !== EXCHANGE_VERSION ||
+    !descriptor ||
+    descriptor.version !== EXCHANGE_VERSION ||
+    descriptor.broadcast_status !== "NOT_BROADCAST"
+  ) {
+    return null;
+  }
+
+  const readyUri = nonEmptyString(descriptor.pair_ready_receipt_uri);
+  const pairEventId = nonEmptyString(descriptor.pair_event_id);
+  const stationParentEventId = nonEmptyString(descriptor.station_parent_event_id);
+  const responses = Array.isArray(descriptor.first_responses) ? descriptor.first_responses : null;
+
+  if (
+    !readyUri ||
+    !parseLedgerEventId(readyUri) ||
+    !pairEventId ||
+    !stationParentEventId ||
+    !responses ||
+    responses.length !== 2
+  ) {
+    return null;
+  }
+
+  const parsed = responses.map((value) => {
+    const item = record(value);
+    const receiptUri = nonEmptyString(item?.receipt_uri);
+    const sessionId = nonEmptyString(item?.session_id);
+    const slot = item?.listener_slot;
+    const label = nonEmptyString(item?.listener_label);
+    const text = nonEmptyString(item?.text);
+    const stationReceiptUri = nonEmptyString(item?.station_receipt_uri);
+    const stationPacketHash = nonEmptyString(item?.station_packet_hash);
+
+    if (
+      !receiptUri ||
+      !parseLedgerEventId(receiptUri) ||
+      !sessionId ||
+      (slot !== "A" && slot !== "B") ||
+      !label ||
+      !text ||
+      item?.mode !== "INTERPRETATION" ||
+      item?.sealed !== true ||
+      !stationReceiptUri ||
+      !parseLedgerEventId(stationReceiptUri) ||
+      !stationPacketHash ||
+      !/^[0-9a-f]{64}$/i.test(stationPacketHash)
+    ) {
+      return null;
+    }
+
+    return {
+      receipt_uri: receiptUri,
+      session_id: sessionId,
+      listener_slot: slot as ExchangeFirstResponse["listener_slot"],
+      listener_label: label,
+      text,
+      mode: "INTERPRETATION" as const,
+      sealed: true as const,
+      station_receipt_uri: stationReceiptUri,
+      station_packet_hash: stationPacketHash.toLowerCase(),
+    };
+  });
+
+  if (!parsed[0] || !parsed[1]) return null;
+  if (parsed[0].listener_slot === parsed[1].listener_slot) return null;
+  if (parsed[0].session_id === parsed[1].session_id) return null;
+  if (parsed[0].station_receipt_uri !== parsed[1].station_receipt_uri) return null;
+  if (parsed[0].station_packet_hash !== parsed[1].station_packet_hash) return null;
+
+  const responseA = parsed.find((response) => response?.listener_slot === "A");
+  const responseB = parsed.find((response) => response?.listener_slot === "B");
+  if (!responseA || !responseB) return null;
+
+  return {
+    version: EXCHANGE_VERSION,
+    pair_ready_receipt_uri: readyUri,
+    pair_event_id: pairEventId,
+    station_parent_event_id: stationParentEventId,
+    first_responses: [responseA, responseB],
+    broadcast_status: "NOT_BROADCAST",
+  };
+}
