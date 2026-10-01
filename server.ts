@@ -1998,7 +1998,7 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
       .from("events")
       .select("*")
       .eq("space_id", getSpaceId())
-      .eq("metadata->>parent_event_id", pairEventId);
+      .contains("metadata", { parent_event_id: pairEventId });
 
     if (childError) throw childError;
 
@@ -2066,16 +2066,27 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
     const { error: responseInsertError } = await supabase.from("events").insert(responseReceipt);
     if (responseInsertError) throw responseInsertError;
 
-    const sealedSessionIds = firstResponses
+    const { data: refreshedChildren, error: refreshError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: pairEventId });
+
+    if (refreshError) throw refreshError;
+
+    const refreshed = refreshedChildren || [];
+    const refreshedFirstResponses = refreshed.filter(
+      (event: any) => event?.content?.kind === "AUTODISCO_FIRST_RESPONSE_SEALED"
+    );
+    const sealedSessionIds = refreshedFirstResponses
       .map((event: any) => event?.content?.session_id)
       .filter((value: any) => typeof value === "string");
-    sealedSessionIds.push(sessionId);
 
     const exchangeReady = pairReady(descriptor, sealedSessionIds);
     let readyReceiptUri: string | null = null;
 
     if (exchangeReady) {
-      const readyExists = children.some((event: any) => event?.content?.kind === "AUTODISCO_PAIR_READY_FOR_EXCHANGE");
+      const readyExists = refreshed.some((event: any) => event?.content?.kind === "AUTODISCO_PAIR_READY_FOR_EXCHANGE");
       if (!readyExists) {
         const readyEventId = generateUUID();
         const readyReceipt = {
@@ -2088,8 +2099,7 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
             text: "Both independent first responses are sealed. Pair is eligible for a later exchange crossing.",
             pair_event_id: pairEventId,
             first_response_receipts: [
-              ...firstResponses.map((event: any) => `ledger://events/${event.id}`),
-              `ledger://events/${responseEventId}`
+              ...refreshedFirstResponses.map((event: any) => `ledger://events/${event.id}`)
             ],
             broadcast_status: "NOT_BROADCAST",
             authority_note: "Ready for exchange does not expose response text, open an exchange, or imply broadcast."
