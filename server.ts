@@ -2712,7 +2712,10 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
     if (existingError) throw existingError;
 
     const existingRendered = (existingChildren || []).find(
-      (event: any) => event?.content?.kind === "AUTODISCO_VOICE_RENDERED"
+      (event: any) =>
+        event?.content?.kind === "AUTODISCO_VOICE_RENDERED" &&
+        event?.metadata?.source === "autodisco_voice_provider" &&
+        event?.metadata?.voice_provider_version === VOICE_PROVIDER_VERSION
     );
 
     if (existingRendered) {
@@ -2882,7 +2885,7 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
     const durationMs = wavDurationMs(audioBytes);
     const identity = getHiveIdentity();
     const renderedHash = createHash("sha256")
-      .update(`${renderEventId}:${GENERIC_TTS_PROVIDER.model}:${outputSha256}`)
+      .update(`${renderEventId}:${GENERIC_TTS_PROVIDER.model}:${GENERIC_TTS_PROVIDER.voice}:voice-provider-001`)
       .digest("hex");
     const renderedEventId =
       `${renderedHash.slice(0, 8)}-${renderedHash.slice(8, 12)}-4${renderedHash.slice(13, 16)}-8${renderedHash.slice(17, 20)}-${renderedHash.slice(20, 32)}`;
@@ -2942,7 +2945,31 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
     };
 
     const { error: insertError } = await supabase.from("events").insert(renderedReceipt);
-    if (insertError && insertError.code !== "23505") throw insertError;
+    if (insertError?.code === "23505") {
+      const { data: winner, error: winnerError } = await supabase
+        .from("events")
+        .select("*")
+        .eq("space_id", getSpaceId())
+        .eq("id", renderedEventId)
+        .maybeSingle();
+
+      if (winnerError) throw winnerError;
+      if (!winner || winner?.content?.kind !== "AUTODISCO_VOICE_RENDERED") {
+        throw insertError;
+      }
+
+      res.json({
+        state: "RENDERED",
+        receiptUri: `ledger://events/${renderedEventId}`,
+        artifact: winner.content?.artifact ?? null,
+        provider: winner.content?.provider ?? null,
+        renderStatus: "RENDERED",
+        broadcastStatus: "NOT_BROADCAST",
+        replayedExistingReceipt: true
+      });
+      return;
+    }
+    if (insertError) throw insertError;
 
     res.json({
       state: "RENDERED",
