@@ -15,7 +15,8 @@
     "test:exchange": "tsx scripts/exchange-selftest.ts",
     "test:voice-render": "tsx scripts/voice-render-selftest.ts",
     "test:voice-provider": "tsx scripts/voice-provider-selftest.ts",
-    "test:broadcast-receipt": "tsx scripts/broadcast-receipt-selftest.ts"
+    "test:broadcast-receipt": "tsx scripts/broadcast-receipt-selftest.ts",
+    "test:listener-return": "tsx scripts/listener-return-selftest.ts"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

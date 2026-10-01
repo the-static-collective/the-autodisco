@@ -20,6 +20,7 @@ import ExchangeView from "./components/ExchangeView";
 import VoiceRenderView from "./components/VoiceRenderView";
 import VoiceProviderView from "./components/VoiceProviderView";
 import BroadcastReceiptView from "./components/BroadcastReceiptView";
+import ListenerReturnView from "./components/ListenerReturnView";
 import { getSupabaseClient, ownerFetch } from "./lib/supabaseClient";
 import { 
   Layers, 
@@ -85,7 +86,7 @@ export default function App() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "station_inbox" | "pair_listen" | "exchange" | "voice_render" | "voice_provider" | "broadcast_receipt" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
+  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "station_inbox" | "pair_listen" | "exchange" | "voice_render" | "voice_provider" | "broadcast_receipt" | "listener_return" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
   const [selectedMotif, setSelectedMotif] = useState<Motif | null>(null);
   const [chatTelemetry, setChatTelemetry] = useState<any>(null);
 
@@ -954,6 +955,18 @@ export default function App() {
               Broadcast Receipt
             </button>
             <button
+              onClick={() => setActiveTab("listener_return")}
+              id="tab-listener-return"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
+                activeTab === "listener_return"
+                  ? "bg-[#141414] text-[#E4E3E0] border-[#141414]"
+                  : "bg-white text-[#141414] border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+              }`}
+            >
+              <Message className="h-3.5 w-3.5" />
+              Listener Return
+            </button>
+            <button
               onClick={() => setActiveTab("flower")}
               id="tab-flower"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
@@ -1144,6 +1157,10 @@ export default function App() {
 
             {activeTab === "broadcast_receipt" && (
               <BroadcastReceiptView />
+            )}
+
+            {activeTab === "listener_return" && (
+              <ListenerReturnView />
             )}
 
             {activeTab === "flower" && (

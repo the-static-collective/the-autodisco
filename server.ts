@@ -44,6 +44,10 @@ import {
   validateAiring,
   validateBroadcastSource,
 } from "./src/lib/broadcastReceipt";
+import {
+  LISTENER_RETURN_VERSION,
+  validateListenerReturn,
+} from "./src/lib/listenerReturn";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -3221,6 +3225,148 @@ app.post("/api/broadcast-receipts/record", requireOwner, async (req: Request, re
   } catch (err: any) {
     console.error("Error recording broadcast occurrence:", err);
     res.status(500).json({ error: err.message || "Failed to record broadcast occurrence." });
+  }
+});
+
+app.post("/api/listener-return/capture", requireOwner, async (req: Request, res: Response) => {
+  const broadcastEventId = parseLedgerEventId(req.body?.broadcastReceipt);
+  if (!broadcastEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["broadcastReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: broadcastEvent, error: broadcastError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", broadcastEventId)
+      .maybeSingle();
+
+    if (broadcastError) throw broadcastError;
+    if (!broadcastEvent) {
+      res.status(404).json({
+        state: "REFUSED",
+        errors: ["broadcast receipt was not found in the Autodisco ledger"]
+      });
+      return;
+    }
+
+    const validation = validateListenerReturn(broadcastEvent, {
+      listenerLabel: req.body?.listenerLabel,
+      responseKind: req.body?.responseKind,
+      text: req.body?.text,
+      artifactSha256: req.body?.artifactSha256,
+      filename: req.body?.filename,
+      capturedAt: req.body?.capturedAt,
+    });
+
+    if (validation.state !== "CAPTURABLE") {
+      res.status(400).json(validation);
+      return;
+    }
+
+    const packet = validation.packet;
+    const receiptHash = createHash("sha256")
+      .update(JSON.stringify({
+        broadcastEventId,
+        listenerLabel: packet.listener.label,
+        responseKind: packet.response.kind,
+        responseValue:
+          packet.response.kind === "TEXT"
+            ? packet.response.text
+            : packet.response.artifact_sha256,
+        capturedAt: packet.captured_at,
+      }))
+      .digest("hex");
+    const receiptEventId =
+      `${receiptHash.slice(0, 8)}-${receiptHash.slice(8, 12)}-4${receiptHash.slice(13, 16)}-8${receiptHash.slice(17, 20)}-${receiptHash.slice(20, 32)}`;
+
+    const identity = getHiveIdentity();
+    const now = new Date().toISOString();
+    const sourceEventId = parseLedgerEventId(packet.lineage.source_receipt_uri);
+    const stationEventId = parseLedgerEventId(packet.lineage.station_receipt_uri);
+    const releaseEventId = parseLedgerEventId(packet.lineage.release_receipt_uri);
+
+    const receipt = {
+      id: receiptEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_LISTENER_RETURN_CAPTURED",
+        mode: "OBSERVED",
+        text: "Post-broadcast human response captured for RETURN ADDRESS handoff.",
+        packet,
+        release_status: "UNRELEASED",
+        semantic_effect: "none",
+        authority_note: "Listener Return is correspondence only. It grants no publication, editing, commercial, synthesis, training, rebroadcast, endorsement, or canon authority."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_LISTENER_RETURN",
+        trace_id: broadcastEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof broadcastEvent?.metadata?.hop === "number" ? broadcastEvent.metadata.hop + 1 : 1,
+        parent_event_id: broadcastEventId,
+        source_parent_event_id: sourceEventId,
+        station_parent_event_id: stationEventId,
+        release_parent_event_id: releaseEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_listener_return",
+        mode: "OBSERVED",
+        listener_return_version: LISTENER_RETURN_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(receipt);
+
+    if (insertError?.code === "23505") {
+      const { data: existing, error: existingError } = await supabase
+        .from("events")
+        .select("*")
+        .eq("space_id", getSpaceId())
+        .eq("id", receiptEventId)
+        .maybeSingle();
+
+      if (existingError) throw existingError;
+      if (!existing || existing?.content?.kind !== "AUTODISCO_LISTENER_RETURN_CAPTURED") {
+        throw insertError;
+      }
+
+      res.json({
+        state: "LISTENER_RETURN_CAPTURED",
+        receiptUri: `ledger://events/${receiptEventId}`,
+        packet: existing.content?.packet ?? packet,
+        releaseStatus: "UNRELEASED",
+        replayedExistingReceipt: true
+      });
+      return;
+    }
+
+    if (insertError) throw insertError;
+
+    res.json({
+      state: "LISTENER_RETURN_CAPTURED",
+      receiptUri: `ledger://events/${receiptEventId}`,
+      packet,
+      releaseStatus: "UNRELEASED",
+      replayedExistingReceipt: false
+    });
+  } catch (err: any) {
+    console.error("Error capturing Listener Return:", err);
+    res.status(500).json({ error: err.message || "Failed to capture Listener Return." });
   }
 });
 
