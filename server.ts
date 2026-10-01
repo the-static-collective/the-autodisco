@@ -12,6 +12,7 @@ import { compileHiveTelemetry } from "./src/lib/hiveTelemetry";
 import { publishOutboundSeedPacket, plantIncomingSeed, generateUUID } from "./src/lib/serverHive";
 import { getSupabaseClient, getSpaceId } from "./src/lib/supabaseClient";
 import { validateReturnAddressRelease } from "./src/lib/releaseGate";
+import { assembleStationPacket, parseLedgerEventId } from "./src/lib/stationPacket";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -1736,6 +1737,94 @@ app.post("/api/release-gate/admit", requireOwner, async (req: Request, res: Resp
   } catch (err: any) {
     console.error("Error admitting RETURN ADDRESS release packet:", err);
     res.status(500).json({ error: err.message || "Failed to append release receipt to ledger." });
+  }
+});
+
+app.post("/api/station-packets/assemble", requireOwner, async (req: Request, res: Response) => {
+  const releaseEventId = parseLedgerEventId(req.body?.releaseReceipt);
+  if (!releaseEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["releaseReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: releaseEvent, error: sourceError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("id", releaseEventId)
+      .maybeSingle();
+
+    if (sourceError) throw sourceError;
+    if (!releaseEvent) {
+      res.status(404).json({
+        state: "REFUSED",
+        errors: ["release receipt was not found in the Autodisco ledger"]
+      });
+      return;
+    }
+
+    const assembly = assembleStationPacket(releaseEvent);
+    if (assembly.state !== "ASSEMBLED") {
+      res.status(400).json(assembly);
+      return;
+    }
+
+    const packet = assembly.packet;
+    const identity = getHiveIdentity();
+    const eventId = generateUUID();
+    const now = new Date().toISOString();
+
+    const stationReceipt = {
+      id: eventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_STATION_PACKET_ASSEMBLED",
+        mode: "OBSERVED",
+        text: `Station packet assembled from release receipt ${releaseEventId}.`,
+        packet,
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Packet assembly is preparation only. No broadcast, generation, training, synthesis, playlist insertion, or canon admission occurred."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_RELEASE_GATE",
+        trace_id: releaseEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof releaseEvent?.metadata?.hop === "number" ? releaseEvent.metadata.hop + 1 : 1,
+        parent_event_id: releaseEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_broadcast_gate",
+        mode: "OBSERVED",
+        station_packet_version: packet.version
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(stationReceipt);
+    if (insertError) throw insertError;
+
+    res.json({
+      state: "STATION_PACKET_ASSEMBLED",
+      receiptUri: `ledger://events/${eventId}`,
+      eventId,
+      broadcastStatus: "NOT_BROADCAST",
+      packet
+    });
+  } catch (err: any) {
+    console.error("Error assembling Autodisco station packet:", err);
+    res.status(500).json({ error: err.message || "Failed to assemble station packet." });
   }
 });
 
