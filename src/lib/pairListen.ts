@@ -211,7 +211,7 @@ export function descriptorFromPairReceipt(event: LedgerEventLike): PairListenDes
     }
 
     return {
-      slot,
+      slot: slot as PairListenSession["slot"],
       session_id: sessionId,
       listener_label: label,
       catalog_access: false as const,
