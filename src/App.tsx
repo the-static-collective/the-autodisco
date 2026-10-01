@@ -36,6 +36,7 @@ import {
   Music,
   Orbit,
   Headphones,
+  Shuffle,
   Lock,
   LogOut,
   WifiOff,
