@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import path from "path";
 import dotenv from "dotenv";
 import fs from "fs";
+import { createHash } from "node:crypto";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { DEFAULT_CODEX } from "./src/data";
@@ -13,6 +14,13 @@ import { publishOutboundSeedPacket, plantIncomingSeed, generateUUID } from "./sr
 import { getSupabaseClient, getSpaceId } from "./src/lib/supabaseClient";
 import { validateReturnAddressRelease } from "./src/lib/releaseGate";
 import { assembleStationPacket, parseLedgerEventId } from "./src/lib/stationPacket";
+import {
+  descriptorFromPairReceipt,
+  pairReady,
+  PAIR_LISTEN_VERSION,
+  sessionFor,
+  validatePairListenSource,
+} from "./src/lib/pairListen";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -1826,6 +1834,327 @@ app.post("/api/station-packets/assemble", requireOwner, async (req: Request, res
   } catch (err: any) {
     console.error("Error assembling Autodisco station packet:", err);
     res.status(500).json({ error: err.message || "Failed to assemble station packet." });
+  }
+});
+
+app.post("/api/pair-listen/open", requireOwner, async (req: Request, res: Response) => {
+  const stationEventId = parseLedgerEventId(req.body?.stationReceipt);
+  if (!stationEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["stationReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: stationEvent, error: sourceError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", stationEventId)
+      .maybeSingle();
+
+    if (sourceError) throw sourceError;
+    if (!stationEvent) {
+      res.status(404).json({
+        state: "REFUSED",
+        errors: ["station packet receipt was not found in the Autodisco ledger"]
+      });
+      return;
+    }
+
+    const packet = stationEvent?.content?.packet;
+    const packetHash = createHash("sha256").update(JSON.stringify(packet ?? null)).digest("hex");
+    const sessionA = generateUUID();
+    const sessionB = generateUUID();
+
+    const validation = validatePairListenSource(
+      stationEvent,
+      req.body?.listenerA,
+      req.body?.listenerB,
+      sessionA,
+      sessionB,
+      packetHash
+    );
+
+    if (validation.state !== "OPENABLE") {
+      res.status(400).json(validation);
+      return;
+    }
+
+    const identity = getHiveIdentity();
+    const pairEventId = generateUUID();
+    const now = new Date().toISOString();
+
+    const pairReceipt = {
+      id: pairEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_PAIR_LISTEN_OPENED",
+        mode: "OBSERVED",
+        text: "Pair Listen opened with two isolated first-response sessions.",
+        descriptor: validation.descriptor,
+        pair_state: "WAITING_FIRST_RESPONSES",
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Opening a pair creates isolated listening sessions only. No exchange, broadcast, synthesis, training, or canon admission occurred."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_BROADCAST_GATE",
+        trace_id: stationEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof stationEvent?.metadata?.hop === "number" ? stationEvent.metadata.hop + 1 : 1,
+        parent_event_id: stationEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_pair_listen",
+        mode: "OBSERVED",
+        pair_listen_version: PAIR_LISTEN_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(pairReceipt);
+    if (insertError) throw insertError;
+
+    res.json({
+      state: "PAIR_OPENED",
+      receiptUri: `ledger://events/${pairEventId}`,
+      pairEventId,
+      descriptor: validation.descriptor,
+      exchangeReady: false,
+      broadcastStatus: "NOT_BROADCAST"
+    });
+  } catch (err: any) {
+    console.error("Error opening Pair Listen:", err);
+    res.status(500).json({ error: err.message || "Failed to open Pair Listen." });
+  }
+});
+
+app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Response) => {
+  const pairEventId = parseLedgerEventId(req.body?.pairReceipt);
+  const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+  const responseText = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+
+  if (!pairEventId || !sessionId || !responseText) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["pairReceipt, sessionId, and non-empty text are required"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: pairEvent, error: pairError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", pairEventId)
+      .maybeSingle();
+
+    if (pairError) throw pairError;
+    if (!pairEvent) {
+      res.status(404).json({
+        state: "REFUSED",
+        errors: ["pair-listen receipt was not found in the Autodisco ledger"]
+      });
+      return;
+    }
+
+    const descriptor = descriptorFromPairReceipt(pairEvent);
+    if (!descriptor) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["source receipt is not a valid Pair Listen opening"]
+      });
+      return;
+    }
+
+    const expectedPacketHash = createHash("sha256")
+      .update(JSON.stringify(descriptor.station_packet))
+      .digest("hex");
+
+    if (expectedPacketHash !== descriptor.station_packet_hash) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["pair-listen station packet hash no longer matches its descriptor"]
+      });
+      return;
+    }
+
+    const session = sessionFor(descriptor, sessionId);
+    if (!session) {
+      res.status(403).json({
+        state: "REFUSED",
+        errors: ["sessionId does not belong to this Pair Listen"]
+      });
+      return;
+    }
+
+    const { data: childEvents, error: childError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: pairEventId });
+
+    if (childError) throw childError;
+
+    const children = childEvents || [];
+    const firstResponses = children.filter((event: any) => event?.content?.kind === "AUTODISCO_FIRST_RESPONSE_SEALED");
+    const alreadySealed = firstResponses.some((event: any) => event?.content?.session_id === sessionId);
+
+    if (alreadySealed) {
+      res.status(409).json({
+        state: "REFUSED",
+        errors: ["this listener session already sealed its first response"]
+      });
+      return;
+    }
+
+    const identity = getHiveIdentity();
+    const responseEventId = generateUUID();
+    const now = new Date().toISOString();
+    const model = typeof req.body?.model === "string" && req.body.model.trim() ? req.body.model.trim() : null;
+    const provider = typeof req.body?.provider === "string" && req.body.provider.trim() ? req.body.provider.trim() : null;
+    const modelVersion = typeof req.body?.modelVersion === "string" && req.body.modelVersion.trim()
+      ? req.body.modelVersion.trim()
+      : null;
+
+    const responseReceipt = {
+      id: responseEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_FIRST_RESPONSE_SEALED",
+        mode: "INTERPRETATION",
+        text: responseText,
+        sealed: true,
+        session_id: session.session_id,
+        listener_slot: session.slot,
+        listener_label: session.listener_label,
+        station_receipt_uri: descriptor.station_receipt_uri,
+        station_packet_hash: descriptor.station_packet_hash,
+        model,
+        provider,
+        model_version: modelVersion,
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Sealed first response is interpretation only. It is not song metadata, artist statement, canon, fact, or broadcast."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_PAIR_LISTEN",
+        trace_id: pairEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof pairEvent?.metadata?.hop === "number" ? pairEvent.metadata.hop + 1 : 1,
+        parent_event_id: pairEventId,
+        station_parent_event_id: parseLedgerEventId(descriptor.station_receipt_uri),
+        session_id: session.session_id,
+        listener_slot: session.slot,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_pair_listen",
+        mode: "INTERPRETATION",
+        pair_listen_version: PAIR_LISTEN_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: responseInsertError } = await supabase.from("events").insert(responseReceipt);
+    if (responseInsertError) throw responseInsertError;
+
+    const { data: refreshedChildren, error: refreshError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: pairEventId });
+
+    if (refreshError) throw refreshError;
+
+    const refreshed = refreshedChildren || [];
+    const refreshedFirstResponses = refreshed.filter(
+      (event: any) => event?.content?.kind === "AUTODISCO_FIRST_RESPONSE_SEALED"
+    );
+    const sealedSessionIds = refreshedFirstResponses
+      .map((event: any) => event?.content?.session_id)
+      .filter((value: any) => typeof value === "string");
+
+    const exchangeReady = pairReady(descriptor, sealedSessionIds);
+    let readyReceiptUri: string | null = null;
+
+    if (exchangeReady) {
+      const readyExists = refreshed.some((event: any) => event?.content?.kind === "AUTODISCO_PAIR_READY_FOR_EXCHANGE");
+      if (!readyExists) {
+        const readyHash = createHash("sha256").update(`${pairEventId}:ready`).digest("hex");
+        const readyEventId =
+          `${readyHash.slice(0, 8)}-${readyHash.slice(8, 12)}-4${readyHash.slice(13, 16)}-8${readyHash.slice(17, 20)}-${readyHash.slice(20, 32)}`;
+        const readyReceipt = {
+          id: readyEventId,
+          space_id: getSpaceId(),
+          author_kind: "SYSTEM",
+          content: {
+            kind: "AUTODISCO_PAIR_READY_FOR_EXCHANGE",
+            mode: "OBSERVED",
+            text: "Both independent first responses are sealed. Pair is eligible for a later exchange crossing.",
+            pair_event_id: pairEventId,
+            first_response_receipts: [
+              ...refreshedFirstResponses.map((event: any) => `ledger://events/${event.id}`)
+            ],
+            broadcast_status: "NOT_BROADCAST",
+            authority_note: "Ready for exchange does not expose response text, open an exchange, or imply broadcast."
+          },
+          metadata: {
+            node_id: identity.nodeId,
+            node_name: identity.nodeName,
+            node_role: identity.nodeRole,
+            origin_node: "AUTODISCO_PAIR_LISTEN",
+            trace_id: pairEvent?.metadata?.trace_id || generateUUID(),
+            hop: typeof pairEvent?.metadata?.hop === "number" ? pairEvent.metadata.hop + 1 : 1,
+            parent_event_id: pairEventId,
+            station_parent_event_id: parseLedgerEventId(descriptor.station_receipt_uri),
+            created_at: now,
+            tao_version: "1.0.0",
+            source: "autodisco_pair_listen",
+            mode: "OBSERVED",
+            pair_listen_version: PAIR_LISTEN_VERSION
+          },
+          created_at: now
+        };
+
+        const { error: readyInsertError } = await supabase.from("events").insert(readyReceipt);
+        if (readyInsertError && readyInsertError.code !== "23505") throw readyInsertError;
+        readyReceiptUri = `ledger://events/${readyEventId}`;
+      }
+    }
+
+    res.json({
+      state: "FIRST_RESPONSE_SEALED",
+      receiptUri: `ledger://events/${responseEventId}`,
+      sessionId,
+      listenerSlot: session.slot,
+      sealed: true,
+      exchangeReady,
+      readyReceiptUri,
+      broadcastStatus: "NOT_BROADCAST"
+    });
+  } catch (err: any) {
+    console.error("Error sealing Pair Listen first response:", err);
+    res.status(500).json({ error: err.message || "Failed to seal first response." });
   }
 });
 
