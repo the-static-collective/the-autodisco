@@ -141,8 +141,23 @@ export function validateListenerReturn(
   const listenerLabel = nonEmptyString(input.listenerLabel);
   if (!listenerLabel) errors.push("listener attribution is required");
 
+  const airing = record(content.airing);
+  const broadcastStartedAt = isoDate(airing?.started_at);
+  const broadcastCompletedAt =
+    airing?.completed_at === null ? null : isoDate(airing?.completed_at);
+  if (!broadcastStartedAt) {
+    errors.push("broadcast receipt must preserve a valid airing start timestamp");
+  }
+
   const capturedAt = isoDate(input.capturedAt);
-  if (!capturedAt) errors.push("captured_at must be a valid timestamp");
+  if (!capturedAt) {
+    errors.push("captured_at must be a valid timestamp");
+  } else {
+    const earliestReturn = broadcastCompletedAt || broadcastStartedAt;
+    if (earliestReturn && Date.parse(capturedAt) < Date.parse(earliestReturn)) {
+      errors.push("listener return cannot be captured before the broadcast occurrence it answers");
+    }
+  }
 
   const responseKind = input.responseKind;
   if (responseKind !== "TEXT" && responseKind !== "AUDIO") {
