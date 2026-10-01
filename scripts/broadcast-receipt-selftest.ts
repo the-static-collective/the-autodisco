@@ -76,6 +76,10 @@ const renderedEvent = {
       voice: "Kore",
     },
     artifact: {
+      storage: "inline-ledger-base64",
+      encoding: "base64",
+      data: "AA==",
+      byte_length: 1,
       sha256: "c".repeat(64),
       duration_ms: 5000,
     },
@@ -118,6 +122,24 @@ assert.equal(
 
 assert.equal(
   validateBroadcastSource(renderedEvent, stationEvent, "d".repeat(64)).state,
+  "REFUSED",
+);
+
+assert.equal(
+  validateBroadcastSource(
+    {
+      ...renderedEvent,
+      content: {
+        ...renderedEvent.content,
+        artifact: {
+          ...renderedEvent.content.artifact,
+          data: "",
+        },
+      },
+    },
+    stationEvent,
+    "b".repeat(64),
+  ).state,
   "REFUSED",
 );
 
