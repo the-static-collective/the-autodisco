@@ -2814,8 +2814,8 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
       return;
     }
 
-    if (!sourceText || sourceText.length > 1600) {
-      const errors = ["generic narration source text must contain 1–1600 characters in Voice Provider 001"];
+    if (!sourceText || sourceText.length > 700) {
+      const errors = ["generic narration source text must contain 1–700 characters in Voice Provider 001"];
       const receiptUri = await appendRefusal(renderEvent, errors, request);
       res.json({
         state: "REFUSED",
@@ -2859,13 +2859,13 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
     }
 
     const audioBytes = Buffer.from(audioBase64, "base64");
-    const MAX_INLINE_AUDIO_BYTES = 4 * 1024 * 1024;
+    const MAX_INLINE_AUDIO_BYTES = 2 * 1024 * 1024;
 
     if (audioBytes.length === 0 || audioBytes.length > MAX_INLINE_AUDIO_BYTES) {
       const errors = [
         audioBytes.length === 0
           ? "provider returned an empty audio artifact"
-          : "rendered audio exceeds the 4 MiB inline ledger artifact limit"
+          : "rendered audio exceeds the 2 MiB inline ledger artifact limit"
       ];
       const receiptUri = await appendRefusal(renderEvent, errors, request);
       res.status(502).json({
