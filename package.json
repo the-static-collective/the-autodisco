@@ -13,7 +13,8 @@
     "test:station-packet": "tsx scripts/station-packet-selftest.ts",
     "test:pair-listen": "tsx scripts/pair-listen-selftest.ts",
     "test:exchange": "tsx scripts/exchange-selftest.ts",
-    "test:voice-render": "tsx scripts/voice-render-selftest.ts"
+    "test:voice-render": "tsx scripts/voice-render-selftest.ts",
+    "test:voice-provider": "tsx scripts/voice-provider-selftest.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
