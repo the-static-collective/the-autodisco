@@ -2842,7 +2842,7 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
           voiceConfig: { voice: GENERIC_TTS_PROVIDER.voice },
         },
       },
-    } as any);
+    });
 
     const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
     const audioBase64 = inlineData?.data;
