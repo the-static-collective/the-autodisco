@@ -71,6 +71,7 @@ function stationPacket(value: unknown): StationPacket | null {
   ] as const;
 
   if (!permissionKeys.every((key) => bool(permissions[key]))) return null;
+  if (permissions.authorized !== true || permissions.broadcast !== true) return null;
   if (memory.catalog_access !== false || memory.prior_broadcast_access !== false) return null;
 
   return value as StationPacket;
