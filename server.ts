@@ -3059,6 +3059,37 @@ app.post("/api/broadcast-receipts/record", requireOwner, async (req: Request, re
     }
 
     const source = sourceValidation.source;
+    const releaseEventId = parseLedgerEventId(source.release_receipt_uri);
+    if (!releaseEventId) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["eligible audio source lost its release receipt ancestry"]
+      });
+      return;
+    }
+
+    const { data: releaseEvent, error: releaseError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", releaseEventId)
+      .maybeSingle();
+
+    if (releaseError) throw releaseError;
+
+    const releaseValidation = releaseEvent ? assembleStationPacket(releaseEvent) : null;
+    if (
+      !releaseValidation ||
+      releaseValidation.state !== "ASSEMBLED" ||
+      JSON.stringify(releaseValidation.packet) !== JSON.stringify(stationEvent?.content?.packet)
+    ) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["source station packet no longer resolves to its recognized RETURN ADDRESS release receipt"]
+      });
+      return;
+    }
+
     const airingValidation = validateAiring(source, {
       station: req.body?.station,
       show: req.body?.show,
@@ -3092,7 +3123,6 @@ app.post("/api/broadcast-receipts/record", requireOwner, async (req: Request, re
 
     const identity = getHiveIdentity();
     const now = new Date().toISOString();
-    const releaseEventId = parseLedgerEventId(source.release_receipt_uri);
     const stationEventId = parseLedgerEventId(source.station_receipt_uri);
 
     const receipt = {
