@@ -11,6 +11,7 @@ import { getHiveIdentity } from "./src/lib/hiveIdentity";
 import { compileHiveTelemetry } from "./src/lib/hiveTelemetry";
 import { publishOutboundSeedPacket, plantIncomingSeed, generateUUID } from "./src/lib/serverHive";
 import { getSupabaseClient, getSpaceId } from "./src/lib/supabaseClient";
+import { validateReturnAddressRelease } from "./src/lib/releaseGate";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -1663,6 +1664,78 @@ app.post("/api/hive/telemetry", requireOwner, async (req: Request, res: Response
   } catch (err: any) {
     console.error("Error creating telemetry event:", err);
     res.status(500).json({ error: err.message || "Failed to write event to shared ledger." });
+  }
+});
+
+app.post("/api/release-gate/admit", requireOwner, async (req: Request, res: Response) => {
+  const validation = validateReturnAddressRelease(req.body?.packet);
+
+  if (validation.state !== "RELEASABLE") {
+    res.status(400).json({
+      state: "HELD",
+      errors: validation.errors,
+      message: "Release packet is not eligible for Autodisco admission."
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  const packet = validation.packet;
+  const identity = getHiveIdentity();
+  const eventId = generateUUID();
+  const now = new Date().toISOString();
+
+  try {
+    const record = {
+      id: eventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "RETURN_ADDRESS_RELEASE_ADMITTED",
+        mode: "OBSERVED",
+        text: `Release declaration admitted for ${packet.artifact.filename || packet.artifact.sha256.slice(0, 12)} by ${packet.performer.label}.`,
+        artifact_sha256: packet.artifact.sha256,
+        artifact_filename: packet.artifact.filename || null,
+        performer_label: packet.performer.label,
+        release: packet.release,
+        lineage: packet.lineage,
+        note: packet.note || null,
+        authority_note: "Attributed release declaration; not proof of legal ownership, license validity, broadcast occurrence, training authority, or canon."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "RETURN_ADDRESS",
+        trace_id: generateUUID(),
+        hop: 1,
+        parent_event_id: packet.lineage.capture_event_id,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "return_address_release_gate",
+        mode: "OBSERVED",
+        release_version: packet.version
+      },
+      created_at: now
+    };
+
+    const { error } = await supabase.from("events").insert(record);
+    if (error) throw error;
+
+    res.json({
+      state: "ADMITTED",
+      receiptUri: `ledger://events/${eventId}`,
+      eventId,
+      packet
+    });
+  } catch (err: any) {
+    console.error("Error admitting RETURN ADDRESS release packet:", err);
+    res.status(500).json({ error: err.message || "Failed to append release receipt to ledger." });
   }
 });
 
