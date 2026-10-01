@@ -45,6 +45,8 @@ broadcast_status: NOT_BROADCAST
 
 The receipt must still match its station-packet hash and permission envelope and preserve provider/model/version/voice plus exact output SHA-256.
 
+For the v0.1 inline artifact, Broadcast Receipt also recomputes the SHA-256 from the stored rendered bytes and verifies the stored byte length before accepting the source. Metadata alone is insufficient.
+
 ## Airing truth
 
 Every broadcast receipt records:
