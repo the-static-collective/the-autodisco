@@ -111,6 +111,27 @@ assert.equal(
   "REFUSED",
 );
 
+assert.equal(
+  validatePairListenSource(
+    {
+      ...stationReceipt,
+      content: {
+        ...stationReceipt.content,
+        packet: {
+          ...stationPacket,
+          permissions: { ...stationPacket.permissions, broadcast: false },
+        },
+      },
+    },
+    "Listener A",
+    "Listener B",
+    "session-a",
+    "session-b",
+    "d".repeat(64),
+  ).state,
+  "REFUSED",
+);
+
 const pairReceipt = {
   id: "33333333-3333-4333-8333-333333333333",
   metadata: {
