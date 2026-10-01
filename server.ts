@@ -3059,6 +3059,27 @@ app.post("/api/broadcast-receipts/record", requireOwner, async (req: Request, re
     }
 
     const source = sourceValidation.source;
+
+    if (source.source_kind === "RENDERED") {
+      const artifact = sourceEvent?.content?.artifact;
+      const audioBase64 = typeof artifact?.data === "string" ? artifact.data : "";
+      const audioBytes = Buffer.from(audioBase64, "base64");
+      const storedByteLength = typeof artifact?.byte_length === "number" ? artifact.byte_length : -1;
+      const actualAudioHash = createHash("sha256").update(audioBytes).digest("hex");
+
+      if (
+        audioBytes.length === 0 ||
+        audioBytes.length !== storedByteLength ||
+        actualAudioHash !== source.audio_sha256
+      ) {
+        res.status(400).json({
+          state: "REFUSED",
+          errors: ["rendered audio bytes no longer match the stored byte length and SHA-256"]
+        });
+        return;
+      }
+    }
+
     const releaseEventId = parseLedgerEventId(source.release_receipt_uri);
     if (!releaseEventId) {
       res.status(400).json({
