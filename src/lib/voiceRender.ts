@@ -201,6 +201,13 @@ export function validateVoiceRenderRequest(
     if (permissions?.synthetic_voice !== true) {
       errors.push("human voice synthesis requires inherited synthetic_voice permission to be explicitly true");
     }
+    if (
+      voiceLabel &&
+      packet &&
+      voiceLabel.toLocaleLowerCase() !== packet.source.performer_label.trim().toLocaleLowerCase()
+    ) {
+      errors.push("requested human voice must match the performer identity authorized by the station packet");
+    }
   }
 
   if (
