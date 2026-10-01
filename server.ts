@@ -1760,6 +1760,7 @@ app.post("/api/station-packets/assemble", requireOwner, async (req: Request, res
     const { data: releaseEvent, error: sourceError } = await supabase
       .from("events")
       .select("*")
+      .eq("space_id", getSpaceId())
       .eq("id", releaseEventId)
       .maybeSingle();
 
