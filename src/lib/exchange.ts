@@ -240,15 +240,19 @@ export function descriptorFromExchangeReceipt(event: LedgerEventLike): ExchangeD
   }
 
   const readyUri = nonEmptyString(descriptor.pair_ready_receipt_uri);
+  const readyEventId = readyUri ? parseLedgerEventId(readyUri) : null;
   const pairEventId = nonEmptyString(descriptor.pair_event_id);
   const stationParentEventId = nonEmptyString(descriptor.station_parent_event_id);
   const responses = Array.isArray(descriptor.first_responses) ? descriptor.first_responses : null;
 
   if (
     !readyUri ||
-    !parseLedgerEventId(readyUri) ||
+    !readyEventId ||
+    metadata?.parent_event_id !== readyEventId ||
     !pairEventId ||
+    metadata?.pair_parent_event_id !== pairEventId ||
     !stationParentEventId ||
+    metadata?.station_parent_event_id !== stationParentEventId ||
     !responses ||
     responses.length !== 2
   ) {
