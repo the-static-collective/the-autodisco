@@ -16,6 +16,7 @@ import QuantumYarnExplorer from "./components/QuantumYarnExplorer";
 import ReleaseGateView from "./components/ReleaseGateView";
 import StationInboxView from "./components/StationInboxView";
 import PairListenView from "./components/PairListenView";
+import ExchangeView from "./components/ExchangeView";
 import { getSupabaseClient, ownerFetch } from "./lib/supabaseClient";
 import { 
   Layers, 
@@ -35,6 +36,7 @@ import {
   Music,
   Orbit,
   Headphones,
+  Shuffle,
   Lock,
   LogOut,
   WifiOff,
@@ -79,7 +81,7 @@ export default function App() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "station_inbox" | "pair_listen" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
+  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "station_inbox" | "pair_listen" | "exchange" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
   const [selectedMotif, setSelectedMotif] = useState<Motif | null>(null);
   const [chatTelemetry, setChatTelemetry] = useState<any>(null);
 
@@ -900,6 +902,18 @@ export default function App() {
               Pair Listen
             </button>
             <button
+              onClick={() => setActiveTab("exchange")}
+              id="tab-exchange"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
+                activeTab === "exchange"
+                  ? "bg-[#141414] text-[#E4E3E0] border-[#141414]"
+                  : "bg-white text-[#141414] border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+              }`}
+            >
+              <Shuffle className="h-3.5 w-3.5" />
+              Exchange
+            </button>
+            <button
               onClick={() => setActiveTab("flower")}
               id="tab-flower"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
@@ -1074,6 +1088,10 @@ export default function App() {
 
             {activeTab === "pair_listen" && (
               <PairListenView />
+            )}
+
+            {activeTab === "exchange" && (
+              <ExchangeView />
             )}
 
             {activeTab === "flower" && (

@@ -21,6 +21,13 @@ import {
   sessionFor,
   validatePairListenSource,
 } from "./src/lib/pairListen";
+import {
+  descriptorFromExchangeReceipt,
+  exchangeClosed,
+  EXCHANGE_VERSION,
+  exchangeSession,
+  validateExchangeSource,
+} from "./src/lib/exchange";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -2155,6 +2162,307 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
   } catch (err: any) {
     console.error("Error sealing Pair Listen first response:", err);
     res.status(500).json({ error: err.message || "Failed to seal first response." });
+  }
+});
+
+app.post("/api/exchange/open", requireOwner, async (req: Request, res: Response) => {
+  const readyEventId = parseLedgerEventId(req.body?.readyReceipt);
+  if (!readyEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["readyReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: readyEvent, error: readyError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", readyEventId)
+      .maybeSingle();
+
+    if (readyError) throw readyError;
+    if (!readyEvent) {
+      res.status(404).json({ state: "REFUSED", errors: ["pair-ready receipt was not found"] });
+      return;
+    }
+
+    const refs = Array.isArray(readyEvent?.content?.first_response_receipts)
+      ? readyEvent.content.first_response_receipts
+          .map((value: any) => parseLedgerEventId(value))
+          .filter((value: any) => typeof value === "string")
+      : [];
+
+    if (refs.length !== 2) {
+      res.status(400).json({ state: "REFUSED", errors: ["pair-ready receipt must reference two first responses"] });
+      return;
+    }
+
+    const { data: firstResponses, error: firstError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .in("id", refs);
+
+    if (firstError) throw firstError;
+
+    const validation = validateExchangeSource(readyEvent, firstResponses || []);
+    if (validation.state !== "OPENABLE") {
+      res.status(400).json(validation);
+      return;
+    }
+
+    const descriptor = validation.descriptor;
+    const identity = getHiveIdentity();
+    const hash = createHash("sha256").update(`${readyEventId}:exchange`).digest("hex");
+    const exchangeEventId =
+      `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+    const now = new Date().toISOString();
+
+    const exchangeReceipt = {
+      id: exchangeEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_EXCHANGE_OPENED",
+        mode: "OBSERVED",
+        text: "Bounded exchange opened after both independent first responses were sealed.",
+        descriptor,
+        exchange_state: "OPEN",
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Opening exchange reveals preserved first responses but does not rewrite them, rank them, synthesize them, or broadcast them."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_PAIR_LISTEN",
+        trace_id: readyEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof readyEvent?.metadata?.hop === "number" ? readyEvent.metadata.hop + 1 : 1,
+        parent_event_id: readyEventId,
+        pair_parent_event_id: descriptor.pair_event_id,
+        station_parent_event_id: descriptor.station_parent_event_id,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_exchange",
+        mode: "OBSERVED",
+        exchange_version: EXCHANGE_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(exchangeReceipt);
+    if (insertError && insertError.code !== "23505") throw insertError;
+
+    res.json({
+      state: "EXCHANGE_OPENED",
+      receiptUri: `ledger://events/${exchangeEventId}`,
+      exchangeEventId,
+      descriptor,
+      broadcastStatus: "NOT_BROADCAST"
+    });
+  } catch (err: any) {
+    console.error("Error opening exchange:", err);
+    res.status(500).json({ error: err.message || "Failed to open exchange." });
+  }
+});
+
+app.post("/api/exchange/reply", requireOwner, async (req: Request, res: Response) => {
+  const exchangeEventId = parseLedgerEventId(req.body?.exchangeReceipt);
+  const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+  const replyText = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+
+  if (!exchangeEventId || !sessionId || !replyText) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["exchangeReceipt, sessionId, and non-empty text are required"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: exchangeEvent, error: exchangeError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", exchangeEventId)
+      .maybeSingle();
+
+    if (exchangeError) throw exchangeError;
+    if (!exchangeEvent) {
+      res.status(404).json({ state: "REFUSED", errors: ["exchange receipt was not found"] });
+      return;
+    }
+
+    const descriptor = descriptorFromExchangeReceipt(exchangeEvent);
+    if (!descriptor) {
+      res.status(400).json({ state: "REFUSED", errors: ["source receipt is not a valid open exchange"] });
+      return;
+    }
+
+    const participant = exchangeSession(descriptor, sessionId);
+    if (!participant) {
+      res.status(403).json({ state: "REFUSED", errors: ["sessionId does not belong to this exchange"] });
+      return;
+    }
+
+    const { data: children, error: childrenError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: exchangeEventId });
+
+    if (childrenError) throw childrenError;
+
+    const existingReplies = (children || []).filter(
+      (event: any) => event?.content?.kind === "AUTODISCO_EXCHANGE_REPLY"
+    );
+
+    if (existingReplies.some((event: any) => event?.content?.session_id === sessionId)) {
+      res.status(409).json({ state: "REFUSED", errors: ["this listener already replied in Exchange 001"] });
+      return;
+    }
+
+    const identity = getHiveIdentity();
+    const replyHash = createHash("sha256").update(`${exchangeEventId}:${sessionId}:reply`).digest("hex");
+    const replyEventId =
+      `${replyHash.slice(0, 8)}-${replyHash.slice(8, 12)}-4${replyHash.slice(13, 16)}-8${replyHash.slice(17, 20)}-${replyHash.slice(20, 32)}`;
+    const now = new Date().toISOString();
+
+    const replyReceipt = {
+      id: replyEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_EXCHANGE_REPLY",
+        mode: "INTERPRETATION",
+        text: replyText,
+        session_id: participant.session_id,
+        listener_slot: participant.listener_slot,
+        listener_label: participant.listener_label,
+        first_response_receipt_uri: participant.receipt_uri,
+        exchange_receipt_uri: `ledger://events/${exchangeEventId}`,
+        station_receipt_uri: participant.station_receipt_uri,
+        station_packet_hash: participant.station_packet_hash,
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Exchange reply is a descendant of the sealed first response, not a replacement, winner, consensus, fact, canon, or broadcast."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_EXCHANGE",
+        trace_id: exchangeEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof exchangeEvent?.metadata?.hop === "number" ? exchangeEvent.metadata.hop + 1 : 1,
+        parent_event_id: exchangeEventId,
+        pair_parent_event_id: descriptor.pair_event_id,
+        station_parent_event_id: descriptor.station_parent_event_id,
+        session_id: participant.session_id,
+        listener_slot: participant.listener_slot,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_exchange",
+        mode: "INTERPRETATION",
+        exchange_version: EXCHANGE_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: replyInsertError } = await supabase.from("events").insert(replyReceipt);
+    if (replyInsertError?.code === "23505") {
+      res.status(409).json({
+        state: "REFUSED",
+        errors: ["this listener reply was already recorded by a concurrent request"]
+      });
+      return;
+    }
+    if (replyInsertError) throw replyInsertError;
+
+    const { data: refreshedChildren, error: refreshError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: exchangeEventId });
+
+    if (refreshError) throw refreshError;
+
+    const refreshedReplies = (refreshedChildren || []).filter(
+      (event: any) => event?.content?.kind === "AUTODISCO_EXCHANGE_REPLY"
+    );
+    const repliedSessions = refreshedReplies
+      .map((event: any) => event?.content?.session_id)
+      .filter((value: any) => typeof value === "string");
+
+    const closed = exchangeClosed(descriptor, repliedSessions);
+    let closedReceiptUri: string | null = null;
+
+    if (closed) {
+      const closeHash = createHash("sha256").update(`${exchangeEventId}:closed`).digest("hex");
+      const closeEventId =
+        `${closeHash.slice(0, 8)}-${closeHash.slice(8, 12)}-4${closeHash.slice(13, 16)}-8${closeHash.slice(17, 20)}-${closeHash.slice(20, 32)}`;
+      const closeReceipt = {
+        id: closeEventId,
+        space_id: getSpaceId(),
+        author_kind: "SYSTEM",
+        content: {
+          kind: "AUTODISCO_EXCHANGE_CLOSED",
+          mode: "OBSERVED",
+          text: "Both bounded exchange replies were recorded. Exchange 001 is closed.",
+          exchange_event_id: exchangeEventId,
+          reply_receipts: refreshedReplies.map((event: any) => `ledger://events/${event.id}`),
+          broadcast_status: "NOT_BROADCAST",
+          authority_note: "Closing the exchange records completion only. It does not merge, rank, summarize, canonize, or broadcast either interpretation."
+        },
+        metadata: {
+          node_id: identity.nodeId,
+          node_name: identity.nodeName,
+          node_role: identity.nodeRole,
+          origin_node: "AUTODISCO_EXCHANGE",
+          trace_id: exchangeEvent?.metadata?.trace_id || generateUUID(),
+          hop: typeof exchangeEvent?.metadata?.hop === "number" ? exchangeEvent.metadata.hop + 1 : 1,
+          parent_event_id: exchangeEventId,
+          pair_parent_event_id: descriptor.pair_event_id,
+          station_parent_event_id: descriptor.station_parent_event_id,
+          created_at: now,
+          tao_version: "1.0.0",
+          source: "autodisco_exchange",
+          mode: "OBSERVED",
+          exchange_version: EXCHANGE_VERSION
+        },
+        created_at: now
+      };
+
+      const { error: closeInsertError } = await supabase.from("events").insert(closeReceipt);
+      if (closeInsertError && closeInsertError.code !== "23505") throw closeInsertError;
+      closedReceiptUri = `ledger://events/${closeEventId}`;
+    }
+
+    res.json({
+      state: "EXCHANGE_REPLY_RECORDED",
+      receiptUri: `ledger://events/${replyEventId}`,
+      sessionId,
+      listenerSlot: participant.listener_slot,
+      exchangeClosed: closed,
+      closedReceiptUri,
+      broadcastStatus: "NOT_BROADCAST"
+    });
+  } catch (err: any) {
+    console.error("Error recording exchange reply:", err);
+    res.status(500).json({ error: err.message || "Failed to record exchange reply." });
   }
 });
 
