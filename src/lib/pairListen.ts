@@ -171,3 +171,70 @@ export function sessionFor(
   if (typeof sessionId !== "string") return null;
   return descriptor.sessions.find((session) => session.session_id === sessionId) ?? null;
 }
+
+
+export function descriptorFromPairReceipt(event: LedgerEventLike): PairListenDescriptor | null {
+  const content = record(event?.content);
+  const metadata = record(event?.metadata);
+  const descriptor = record(content?.descriptor);
+
+  if (
+    content?.kind !== "AUTODISCO_PAIR_LISTEN_OPENED" ||
+    content?.mode !== "OBSERVED" ||
+    content?.broadcast_status !== "NOT_BROADCAST" ||
+    metadata?.source !== "autodisco_pair_listen" ||
+    metadata?.pair_listen_version !== PAIR_LISTEN_VERSION ||
+    !descriptor ||
+    descriptor.version !== PAIR_LISTEN_VERSION ||
+    !/^[0-9a-f]{64}$/i.test(nonEmptyString(descriptor.station_packet_hash) || "")
+  ) {
+    return null;
+  }
+
+  const packet = stationPacket(descriptor.station_packet);
+  const sessions = Array.isArray(descriptor.sessions) ? descriptor.sessions : null;
+  if (!packet || !sessions || sessions.length !== 2) return null;
+
+  const parsedSessions = sessions.map((value) => {
+    const item = record(value);
+    const slot = item?.slot;
+    const sessionId = nonEmptyString(item?.session_id);
+    const label = nonEmptyString(item?.listener_label);
+    if (
+      (slot !== "A" && slot !== "B") ||
+      !sessionId ||
+      !label ||
+      item?.catalog_access !== false ||
+      item?.prior_broadcast_access !== false
+    ) {
+      return null;
+    }
+
+    return {
+      slot,
+      session_id: sessionId,
+      listener_label: label,
+      catalog_access: false as const,
+      prior_broadcast_access: false as const,
+    };
+  });
+
+  if (!parsedSessions[0] || !parsedSessions[1]) return null;
+  if (parsedSessions[0].slot === parsedSessions[1].slot) return null;
+  if (parsedSessions[0].session_id === parsedSessions[1].session_id) return null;
+
+  const sessionA = parsedSessions.find((session) => session?.slot === "A");
+  const sessionB = parsedSessions.find((session) => session?.slot === "B");
+  if (!sessionA || !sessionB) return null;
+
+  const stationReceiptUri = nonEmptyString(descriptor.station_receipt_uri);
+  if (!stationReceiptUri) return null;
+
+  return {
+    version: PAIR_LISTEN_VERSION,
+    station_receipt_uri: stationReceiptUri,
+    station_packet_hash: String(descriptor.station_packet_hash).toLowerCase(),
+    station_packet: packet,
+    sessions: [sessionA, sessionB],
+  };
+}
