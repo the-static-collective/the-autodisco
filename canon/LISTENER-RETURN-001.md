@@ -51,6 +51,8 @@ The source, station, and release URIs carried inside the broadcast receipt must 
 
 A right-looking receipt with mismatched ancestry is refused.
 
+The return must also be temporally downstream of the broadcast occurrence. If the broadcast has a completion timestamp, `captured_at` may not precede it; otherwise it may not precede the broadcast start.
+
 ## Packet
 
 Successful capture produces:
