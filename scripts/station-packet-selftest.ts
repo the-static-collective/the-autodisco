@@ -3,6 +3,10 @@ import { assembleStationPacket, parseLedgerEventId } from "../src/lib/stationPac
 
 const releaseEvent = {
   id: "11111111-1111-4111-8111-111111111111",
+  metadata: {
+    source: "return_address_release_gate",
+    release_version: "return-address-release/0.1",
+  },
   content: {
     kind: "RETURN_ADDRESS_RELEASE_ADMITTED",
     mode: "OBSERVED",
@@ -46,6 +50,14 @@ assert.equal(
   assembleStationPacket({
     ...releaseEvent,
     content: { ...releaseEvent.content, kind: "AUTODISCO_MUTATION_ACCEPTED" },
+  }).state,
+  "REFUSED",
+);
+
+assert.equal(
+  assembleStationPacket({
+    ...releaseEvent,
+    metadata: { ...releaseEvent.metadata, source: "manual_ledger_write" },
   }).state,
   "REFUSED",
 );
