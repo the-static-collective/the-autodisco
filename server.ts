@@ -2383,7 +2383,14 @@ app.post("/api/exchange/reply", requireOwner, async (req: Request, res: Response
     };
 
     const { error: replyInsertError } = await supabase.from("events").insert(replyReceipt);
-    if (replyInsertError && replyInsertError.code !== "23505") throw replyInsertError;
+    if (replyInsertError?.code === "23505") {
+      res.status(409).json({
+        state: "REFUSED",
+        errors: ["this listener reply was already recorded by a concurrent request"]
+      });
+      return;
+    }
+    if (replyInsertError) throw replyInsertError;
 
     const { data: refreshedChildren, error: refreshError } = await supabase
       .from("events")
