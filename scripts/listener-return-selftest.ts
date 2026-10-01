@@ -14,6 +14,10 @@ const broadcastEvent = {
     kind: "AUTODISCO_BROADCAST_RECORDED",
     mode: "OBSERVED",
     broadcast_status: "BROADCAST_RECORDED",
+    airing: {
+      started_at: "2026-10-01T20:00:00.000Z",
+      completed_at: "2026-10-01T20:05:00.000Z",
+    },
     source_receipt_uri: "ledger://events/77777777-7777-4777-8777-777777777777",
     station_receipt_uri: "ledger://events/22222222-2222-4222-8222-222222222222",
     release_receipt_uri: "ledger://events/11111111-1111-4111-8111-111111111111",
@@ -157,6 +161,16 @@ assert.equal(
     responseKind: "TEXT",
     text: "hello",
     capturedAt: "not-a-date",
+  }).state,
+  "REFUSED",
+);
+
+assert.equal(
+  validateListenerReturn(broadcastEvent, {
+    listenerLabel: "Human Listener",
+    responseKind: "TEXT",
+    text: "hello",
+    capturedAt: "2026-10-01T19:59:59.000Z",
   }).state,
   "REFUSED",
 );
