@@ -32,6 +32,13 @@ import {
   validateVoiceRenderRequest,
   VOICE_RENDER_VERSION,
 } from "./src/lib/voiceRender";
+import {
+  GENERIC_TTS_PROVIDER,
+  providerCapabilityErrors,
+  validateVoiceProviderSource,
+  VOICE_PROVIDER_VERSION,
+  wavDurationMs,
+} from "./src/lib/voiceProvider";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -2604,6 +2611,351 @@ app.post("/api/voice-render/request", requireOwner, async (req: Request, res: Re
   } catch (err: any) {
     console.error("Error processing voice render request:", err);
     res.status(500).json({ error: err.message || "Failed to process voice render request." });
+  }
+});
+
+app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: Response) => {
+  const renderEventId = parseLedgerEventId(req.body?.renderReceipt);
+  if (!renderEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["renderReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  const appendRefusal = async (
+    sourceEvent: any,
+    errors: string[],
+    request: any = null,
+  ) => {
+    const refusalHash = createHash("sha256")
+      .update(`${renderEventId}:voice-provider-refused:${errors.join("|")}`)
+      .digest("hex");
+    const refusalEventId =
+      `${refusalHash.slice(0, 8)}-${refusalHash.slice(8, 12)}-4${refusalHash.slice(13, 16)}-8${refusalHash.slice(17, 20)}-${refusalHash.slice(20, 32)}`;
+    const identity = getHiveIdentity();
+    const now = new Date().toISOString();
+
+    const receipt = {
+      id: refusalEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_VOICE_PROVIDER_REFUSED",
+        mode: "OBSERVED",
+        text: "Voice provider execution refused.",
+        render_request_receipt_uri: `ledger://events/${renderEventId}`,
+        request,
+        errors,
+        render_status: "NOT_RENDERED",
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Provider refusal creates no audio descendant and grants no additional rights."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_VOICE_PROVIDER",
+        trace_id: sourceEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof sourceEvent?.metadata?.hop === "number" ? sourceEvent.metadata.hop + 1 : 1,
+        parent_event_id: renderEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_voice_provider",
+        mode: "OBSERVED",
+        voice_provider_version: VOICE_PROVIDER_VERSION
+      },
+      created_at: now
+    };
+
+    const { error } = await supabase.from("events").insert(receipt);
+    if (error && error.code !== "23505") throw error;
+
+    return `ledger://events/${refusalEventId}`;
+  };
+
+  try {
+    const { data: renderEvent, error: renderError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", renderEventId)
+      .maybeSingle();
+
+    if (renderError) throw renderError;
+    if (!renderEvent) {
+      res.status(404).json({ state: "REFUSED", errors: ["voice render receipt was not found"] });
+      return;
+    }
+
+    const providerValidation = validateVoiceProviderSource(renderEvent);
+    if (providerValidation.state !== "EXECUTABLE") {
+      res.status(400).json(providerValidation);
+      return;
+    }
+
+    const request = providerValidation.request;
+
+    const { data: existingChildren, error: existingError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .contains("metadata", { parent_event_id: renderEventId });
+
+    if (existingError) throw existingError;
+
+    const existingRendered = (existingChildren || []).find(
+      (event: any) => event?.content?.kind === "AUTODISCO_VOICE_RENDERED"
+    );
+
+    if (existingRendered) {
+      res.json({
+        state: "RENDERED",
+        receiptUri: `ledger://events/${existingRendered.id}`,
+        artifact: existingRendered.content?.artifact ?? null,
+        provider: existingRendered.content?.provider ?? null,
+        renderStatus: "RENDERED",
+        broadcastStatus: "NOT_BROADCAST",
+        replayedExistingReceipt: true
+      });
+      return;
+    }
+
+    const sourceEventId = parseLedgerEventId(request.source_receipt_uri);
+    const stationEventId = parseLedgerEventId(request.station_receipt_uri);
+
+    if (!sourceEventId || !stationEventId) {
+      const errors = ["admitted render request lost source or station ancestry"];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.status(400).json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    const [{ data: sourceEvent, error: sourceError }, { data: stationEvent, error: stationError }] =
+      await Promise.all([
+        supabase.from("events").select("*").eq("space_id", getSpaceId()).eq("id", sourceEventId).maybeSingle(),
+        supabase.from("events").select("*").eq("space_id", getSpaceId()).eq("id", stationEventId).maybeSingle(),
+      ]);
+
+    if (sourceError) throw sourceError;
+    if (stationError) throw stationError;
+
+    const sourceText = typeof sourceEvent?.content?.text === "string" ? sourceEvent.content.text : "";
+    const sourceTextHash = createHash("sha256").update(sourceText).digest("hex");
+    const stationPacketHash = createHash("sha256")
+      .update(JSON.stringify(stationEvent?.content?.packet ?? null))
+      .digest("hex");
+
+    const revalidation = validateVoiceRenderRequest(
+      sourceEvent || {},
+      stationEvent || {},
+      request.render_kind,
+      request.requested_voice.label || "",
+      sourceTextHash,
+      stationPacketHash
+    );
+
+    const requestStillMatches =
+      revalidation.state === "ADMITTED" &&
+      JSON.stringify(revalidation.request) === JSON.stringify(request);
+
+    if (!requestStillMatches) {
+      const errors =
+        revalidation.state === "REFUSED"
+          ? ["render request failed provider-time revalidation", ...revalidation.errors]
+          : ["render request no longer matches its source contribution or inherited permissions"];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.status(409).json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    const capabilityErrors = providerCapabilityErrors(request);
+    if (capabilityErrors.length > 0) {
+      const receiptUri = await appendRefusal(renderEvent, capabilityErrors, request);
+      res.json({
+        state: "REFUSED",
+        receiptUri,
+        errors: capabilityErrors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    if (!ai) {
+      const errors = ["Gemini provider is not configured; GEMINI_API_KEY is required"];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    if (!sourceText || sourceText.length > 1600) {
+      const errors = ["generic narration source text must contain 1–1600 characters in Voice Provider 001"];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    const response = await ai.models.generateContent({
+      model: GENERIC_TTS_PROVIDER.model,
+      contents: [{
+        role: "user",
+        parts: [{ text: sourceText }],
+      }],
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: { voice: GENERIC_TTS_PROVIDER.voice },
+        },
+      },
+    } as any);
+
+    const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+    const audioBase64 = inlineData?.data;
+    const mimeType = inlineData?.mimeType || GENERIC_TTS_PROVIDER.mime_type;
+
+    if (!audioBase64) {
+      const errors = ["Gemini TTS returned no audio bytes"];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.status(502).json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    const audioBytes = Buffer.from(audioBase64, "base64");
+    const MAX_INLINE_AUDIO_BYTES = 4 * 1024 * 1024;
+
+    if (audioBytes.length === 0 || audioBytes.length > MAX_INLINE_AUDIO_BYTES) {
+      const errors = [
+        audioBytes.length === 0
+          ? "provider returned an empty audio artifact"
+          : "rendered audio exceeds the 4 MiB inline ledger artifact limit"
+      ];
+      const receiptUri = await appendRefusal(renderEvent, errors, request);
+      res.status(502).json({
+        state: "REFUSED",
+        receiptUri,
+        errors,
+        renderStatus: "NOT_RENDERED",
+        broadcastStatus: "NOT_BROADCAST"
+      });
+      return;
+    }
+
+    const outputSha256 = createHash("sha256").update(audioBytes).digest("hex");
+    const durationMs = wavDurationMs(audioBytes);
+    const identity = getHiveIdentity();
+    const renderedHash = createHash("sha256")
+      .update(`${renderEventId}:${GENERIC_TTS_PROVIDER.model}:${outputSha256}`)
+      .digest("hex");
+    const renderedEventId =
+      `${renderedHash.slice(0, 8)}-${renderedHash.slice(8, 12)}-4${renderedHash.slice(13, 16)}-8${renderedHash.slice(17, 20)}-${renderedHash.slice(20, 32)}`;
+    const now = new Date().toISOString();
+
+    const renderedReceipt = {
+      id: renderedEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_VOICE_RENDERED",
+        mode: "DERIVED",
+        text: "Generic narration rendered from an admitted Voice Render request.",
+        render_request_receipt_uri: `ledger://events/${renderEventId}`,
+        source_receipt_uri: request.source_receipt_uri,
+        station_receipt_uri: request.station_receipt_uri,
+        source_text_sha256: request.source_text_hash,
+        station_packet_sha256: request.station_packet_hash,
+        inherited_permissions: request.inherited_permissions,
+        render_kind: request.render_kind,
+        provider: {
+          name: GENERIC_TTS_PROVIDER.provider,
+          model: GENERIC_TTS_PROVIDER.model,
+          model_version: GENERIC_TTS_PROVIDER.model_version,
+          voice: GENERIC_TTS_PROVIDER.voice
+        },
+        artifact: {
+          storage: "inline-ledger-base64",
+          encoding: "base64",
+          mime_type: mimeType,
+          byte_length: audioBytes.length,
+          duration_ms: durationMs,
+          sha256: outputSha256,
+          data: audioBase64
+        },
+        render_status: "RENDERED",
+        broadcast_status: "NOT_BROADCAST",
+        authority_note: "Rendered audio is a derived artifact only. Provider success does not imply publication, broadcast, training permission, human-voice identity, or canon."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_VOICE_PROVIDER",
+        trace_id: renderEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof renderEvent?.metadata?.hop === "number" ? renderEvent.metadata.hop + 1 : 1,
+        parent_event_id: renderEventId,
+        contribution_parent_event_id: sourceEventId,
+        station_parent_event_id: stationEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_voice_provider",
+        mode: "DERIVED",
+        voice_provider_version: VOICE_PROVIDER_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(renderedReceipt);
+    if (insertError && insertError.code !== "23505") throw insertError;
+
+    res.json({
+      state: "RENDERED",
+      receiptUri: `ledger://events/${renderedEventId}`,
+      artifact: renderedReceipt.content.artifact,
+      provider: renderedReceipt.content.provider,
+      renderStatus: "RENDERED",
+      broadcastStatus: "NOT_BROADCAST",
+      replayedExistingReceipt: false
+    });
+  } catch (err: any) {
+    console.error("Error executing voice provider:", err);
+    res.status(500).json({ error: err.message || "Voice provider execution failed." });
   }
 });
 
