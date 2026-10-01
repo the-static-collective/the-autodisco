@@ -112,8 +112,30 @@ export function validateListenerReturn(
   if (!stationReceiptUri || !parseLedgerEventId(stationReceiptUri)) {
     errors.push("broadcast receipt must preserve a valid station receipt URI");
   }
-  if (!releaseReceiptUri || !parseLedgerEventId(releaseReceiptUri)) {
+  const sourceEventId = sourceReceiptUri ? parseLedgerEventId(sourceReceiptUri) : null;
+  const stationEventId = stationReceiptUri ? parseLedgerEventId(stationReceiptUri) : null;
+  const releaseEventId = releaseReceiptUri ? parseLedgerEventId(releaseReceiptUri) : null;
+
+  if (!releaseReceiptUri || !releaseEventId) {
     errors.push("broadcast receipt must preserve a valid release receipt URI");
+  }
+  if (
+    sourceEventId &&
+    metadata?.parent_event_id !== sourceEventId
+  ) {
+    errors.push("broadcast receipt source ancestry does not match ledger metadata");
+  }
+  if (
+    stationEventId &&
+    metadata?.station_parent_event_id !== stationEventId
+  ) {
+    errors.push("broadcast receipt station ancestry does not match ledger metadata");
+  }
+  if (
+    releaseEventId &&
+    metadata?.release_parent_event_id !== releaseEventId
+  ) {
+    errors.push("broadcast receipt release ancestry does not match ledger metadata");
   }
 
   const listenerLabel = nonEmptyString(input.listenerLabel);
