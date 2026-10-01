@@ -1,4 +1,4 @@
-import type { ReleasePermissions } from "./releaseGate";
+import { RETURN_ADDRESS_RELEASE_VERSION, type ReleasePermissions } from "./releaseGate";
 
 export const AUTODISCO_STATION_PACKET_VERSION = "autodisco-station-packet/0.1" as const;
 
@@ -31,6 +31,7 @@ export type StationPacketAssembly =
 type LedgerEventLike = {
   id?: unknown;
   content?: unknown;
+  metadata?: unknown;
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -91,6 +92,7 @@ export function assembleStationPacket(event: LedgerEventLike): StationPacketAsse
   const errors: string[] = [];
   const eventId = nonEmptyString(event?.id);
   const content = record(event?.content);
+  const metadata = record(event?.metadata);
 
   if (!eventId) errors.push("release receipt event id is required");
   if (!content) {
@@ -102,6 +104,12 @@ export function assembleStationPacket(event: LedgerEventLike): StationPacketAsse
   }
   if (content.mode !== "OBSERVED") {
     errors.push("source release receipt must preserve mode OBSERVED");
+  }
+  if (metadata?.source !== "return_address_release_gate") {
+    errors.push("source event was not emitted by RETURN ADDRESS Release Gate");
+  }
+  if (metadata?.release_version !== RETURN_ADDRESS_RELEASE_VERSION) {
+    errors.push("source event release version is not recognized");
   }
 
   const artifactSha256 = nonEmptyString(content.artifact_sha256);
