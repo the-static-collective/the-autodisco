@@ -28,6 +28,10 @@ import {
   exchangeSession,
   validateExchangeSource,
 } from "./src/lib/exchange";
+import {
+  validateVoiceRenderRequest,
+  VOICE_RENDER_VERSION,
+} from "./src/lib/voiceRender";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -2463,6 +2467,143 @@ app.post("/api/exchange/reply", requireOwner, async (req: Request, res: Response
   } catch (err: any) {
     console.error("Error recording exchange reply:", err);
     res.status(500).json({ error: err.message || "Failed to record exchange reply." });
+  }
+});
+
+app.post("/api/voice-render/request", requireOwner, async (req: Request, res: Response) => {
+  const sourceEventId = parseLedgerEventId(req.body?.sourceReceipt);
+  const renderKind = req.body?.renderKind;
+  const requestedVoiceLabel =
+    typeof req.body?.requestedVoiceLabel === "string" ? req.body.requestedVoiceLabel.trim() : "";
+
+  if (!sourceEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["sourceReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: sourceEvent, error: sourceError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", sourceEventId)
+      .maybeSingle();
+
+    if (sourceError) throw sourceError;
+    if (!sourceEvent) {
+      res.status(404).json({ state: "REFUSED", errors: ["source contribution receipt was not found"] });
+      return;
+    }
+
+    const sourceText = typeof sourceEvent?.content?.text === "string" ? sourceEvent.content.text : "";
+    const sourceTextHash = createHash("sha256").update(sourceText).digest("hex");
+    const stationEventId = parseLedgerEventId(sourceEvent?.content?.station_receipt_uri);
+
+    let stationEvent: any = null;
+    if (stationEventId) {
+      const { data, error } = await supabase
+        .from("events")
+        .select("*")
+        .eq("space_id", getSpaceId())
+        .eq("id", stationEventId)
+        .maybeSingle();
+      if (error) throw error;
+      stationEvent = data;
+    }
+
+    const stationPacketHash = stationEvent
+      ? createHash("sha256").update(JSON.stringify(stationEvent?.content?.packet ?? null)).digest("hex")
+      : "";
+
+    const validation = validateVoiceRenderRequest(
+      sourceEvent,
+      stationEvent || {},
+      renderKind,
+      requestedVoiceLabel,
+      sourceTextHash,
+      stationPacketHash
+    );
+
+    const identity = getHiveIdentity();
+    const receiptHash = createHash("sha256")
+      .update(`${sourceEventId}:${String(renderKind)}:${requestedVoiceLabel || "generic"}:voice-render-001`)
+      .digest("hex");
+    const receiptEventId =
+      `${receiptHash.slice(0, 8)}-${receiptHash.slice(8, 12)}-4${receiptHash.slice(13, 16)}-8${receiptHash.slice(17, 20)}-${receiptHash.slice(20, 32)}`;
+    const now = new Date().toISOString();
+    const admitted = validation.state === "ADMITTED";
+
+    const receipt = {
+      id: receiptEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: admitted
+        ? {
+            kind: "AUTODISCO_VOICE_RENDER_REQUEST_ADMITTED",
+            mode: "OBSERVED",
+            text: "Voice render request admitted. No audio has been rendered.",
+            request: validation.request,
+            render_status: "NOT_RENDERED",
+            broadcast_status: "NOT_BROADCAST",
+            authority_note: "Admission authorizes only this bounded render request. No provider call, audio generation, training, broadcast, or additional permission was inferred."
+          }
+        : {
+            kind: "AUTODISCO_VOICE_RENDER_REFUSED",
+            mode: "OBSERVED",
+            text: "Voice render request refused by inherited permission gate.",
+            source_receipt_uri: `ledger://events/${sourceEventId}`,
+            source_text_hash: sourceText ? sourceTextHash : null,
+            render_kind: renderKind ?? null,
+            requested_voice: requestedVoiceLabel ? { label: requestedVoiceLabel } : { label: null },
+            inherited_permissions: validation.inherited_permissions,
+            errors: validation.errors,
+            render_status: "NOT_RENDERED",
+            broadcast_status: "NOT_BROADCAST",
+            authority_note: "Refusal is durable evidence of the gate decision. No render request or audio descendant was created."
+          },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_VOICE_RENDER_GATE",
+        trace_id: sourceEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof sourceEvent?.metadata?.hop === "number" ? sourceEvent.metadata.hop + 1 : 1,
+        parent_event_id: sourceEventId,
+        station_parent_event_id: stationEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_voice_render",
+        mode: "OBSERVED",
+        voice_render_version: VOICE_RENDER_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(receipt);
+    if (insertError && insertError.code !== "23505") throw insertError;
+
+    res.json({
+      state: validation.state,
+      receiptUri: `ledger://events/${receiptEventId}`,
+      sourceTextHash: sourceText ? sourceTextHash : null,
+      inheritedPermissions: validation.inherited_permissions,
+      request: validation.request,
+      errors: validation.errors,
+      renderStatus: "NOT_RENDERED",
+      broadcastStatus: "NOT_BROADCAST"
+    });
+  } catch (err: any) {
+    console.error("Error processing voice render request:", err);
+    res.status(500).json({ error: err.message || "Failed to process voice render request." });
   }
 });
 
