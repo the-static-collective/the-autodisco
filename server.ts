@@ -1985,6 +1985,18 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
       return;
     }
 
+    const expectedPacketHash = createHash("sha256")
+      .update(JSON.stringify(descriptor.station_packet))
+      .digest("hex");
+
+    if (expectedPacketHash !== descriptor.station_packet_hash) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["pair-listen station packet hash no longer matches its descriptor"]
+      });
+      return;
+    }
+
     const session = sessionFor(descriptor, sessionId);
     if (!session) {
       res.status(403).json({
@@ -2088,7 +2100,9 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
     if (exchangeReady) {
       const readyExists = refreshed.some((event: any) => event?.content?.kind === "AUTODISCO_PAIR_READY_FOR_EXCHANGE");
       if (!readyExists) {
-        const readyEventId = generateUUID();
+        const readyHash = createHash("sha256").update(`${pairEventId}:ready`).digest("hex");
+        const readyEventId =
+          `${readyHash.slice(0, 8)}-${readyHash.slice(8, 12)}-4${readyHash.slice(13, 16)}-8${readyHash.slice(17, 20)}-${readyHash.slice(20, 32)}`;
         const readyReceipt = {
           id: readyEventId,
           space_id: getSpaceId(),
@@ -2123,7 +2137,7 @@ app.post("/api/pair-listen/respond", requireOwner, async (req: Request, res: Res
         };
 
         const { error: readyInsertError } = await supabase.from("events").insert(readyReceipt);
-        if (readyInsertError) throw readyInsertError;
+        if (readyInsertError && readyInsertError.code !== "23505") throw readyInsertError;
         readyReceiptUri = `ledger://events/${readyEventId}`;
       }
     }
