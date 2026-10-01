@@ -39,6 +39,11 @@ import {
   VOICE_PROVIDER_VERSION,
   wavDurationMs,
 } from "./src/lib/voiceProvider";
+import {
+  BROADCAST_RECEIPT_VERSION,
+  validateAiring,
+  validateBroadcastSource,
+} from "./src/lib/broadcastReceipt";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
@@ -2983,6 +2988,239 @@ app.post("/api/voice-provider/render", requireOwner, async (req: Request, res: R
   } catch (err: any) {
     console.error("Error executing voice provider:", err);
     res.status(500).json({ error: err.message || "Voice provider execution failed." });
+  }
+});
+
+app.post("/api/broadcast-receipts/record", requireOwner, async (req: Request, res: Response) => {
+  const sourceEventId = parseLedgerEventId(req.body?.sourceReceipt);
+  if (!sourceEventId) {
+    res.status(400).json({
+      state: "REFUSED",
+      errors: ["sourceReceipt must be a ledger://events/<uuid> URI or UUID"]
+    });
+    return;
+  }
+
+  const supabase = (req as AuthRequest).supabaseClient || getSupabaseClient();
+  if (!supabase) {
+    res.status(503).json({ error: "Supabase ledger is not configured on this host." });
+    return;
+  }
+
+  try {
+    const { data: sourceEvent, error: sourceError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", sourceEventId)
+      .maybeSingle();
+
+    if (sourceError) throw sourceError;
+    if (!sourceEvent) {
+      res.status(404).json({ state: "REFUSED", errors: ["source audio receipt was not found"] });
+      return;
+    }
+
+    let stationEvent = sourceEvent;
+    if (sourceEvent?.content?.kind === "AUTODISCO_VOICE_RENDERED") {
+      const stationEventId = parseLedgerEventId(sourceEvent?.content?.station_receipt_uri);
+      if (!stationEventId) {
+        res.status(400).json({
+          state: "REFUSED",
+          errors: ["rendered audio source does not preserve a valid station receipt URI"]
+        });
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("events")
+        .select("*")
+        .eq("space_id", getSpaceId())
+        .eq("id", stationEventId)
+        .maybeSingle();
+
+      if (error) throw error;
+      stationEvent = data;
+    }
+
+    const stationPacketHash = stationEvent
+      ? createHash("sha256").update(JSON.stringify(stationEvent?.content?.packet ?? null)).digest("hex")
+      : "";
+
+    const sourceValidation = validateBroadcastSource(
+      sourceEvent,
+      stationEvent || {},
+      stationPacketHash
+    );
+
+    if (sourceValidation.state !== "ELIGIBLE") {
+      res.status(400).json(sourceValidation);
+      return;
+    }
+
+    const source = sourceValidation.source;
+
+    if (source.source_kind === "RENDERED") {
+      const artifact = sourceEvent?.content?.artifact;
+      const audioBase64 = typeof artifact?.data === "string" ? artifact.data : "";
+      const audioBytes = Buffer.from(audioBase64, "base64");
+      const storedByteLength = typeof artifact?.byte_length === "number" ? artifact.byte_length : -1;
+      const actualAudioHash = createHash("sha256").update(audioBytes).digest("hex");
+
+      if (
+        audioBytes.length === 0 ||
+        audioBytes.length !== storedByteLength ||
+        actualAudioHash !== source.audio_sha256
+      ) {
+        res.status(400).json({
+          state: "REFUSED",
+          errors: ["rendered audio bytes no longer match the stored byte length and SHA-256"]
+        });
+        return;
+      }
+    }
+
+    const releaseEventId = parseLedgerEventId(source.release_receipt_uri);
+    if (!releaseEventId) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["eligible audio source lost its release receipt ancestry"]
+      });
+      return;
+    }
+
+    const { data: releaseEvent, error: releaseError } = await supabase
+      .from("events")
+      .select("*")
+      .eq("space_id", getSpaceId())
+      .eq("id", releaseEventId)
+      .maybeSingle();
+
+    if (releaseError) throw releaseError;
+
+    const releaseValidation = releaseEvent ? assembleStationPacket(releaseEvent) : null;
+    if (
+      !releaseValidation ||
+      releaseValidation.state !== "ASSEMBLED" ||
+      JSON.stringify(releaseValidation.packet) !== JSON.stringify(stationEvent?.content?.packet)
+    ) {
+      res.status(400).json({
+        state: "REFUSED",
+        errors: ["source station packet no longer resolves to its recognized RETURN ADDRESS release receipt"]
+      });
+      return;
+    }
+
+    const airingValidation = validateAiring(source, {
+      station: req.body?.station,
+      show: req.body?.show,
+      slot: req.body?.slot,
+      startedAt: req.body?.startedAt,
+      completedAt: req.body?.completedAt,
+      completion: req.body?.completion,
+      airedAudioSha256: req.body?.airedAudioSha256,
+      airedDurationMs: req.body?.airedDurationMs,
+    });
+
+    if (airingValidation.state !== "RECORDABLE") {
+      res.status(400).json(airingValidation);
+      return;
+    }
+
+    const airing = airingValidation.airing;
+    const receiptHash = createHash("sha256")
+      .update([
+        sourceEventId,
+        airing.aired_audio_sha256,
+        airing.station,
+        airing.show || "",
+        airing.slot || "",
+        airing.started_at,
+        airing.completion,
+      ].join(":"))
+      .digest("hex");
+    const receiptEventId =
+      `${receiptHash.slice(0, 8)}-${receiptHash.slice(8, 12)}-4${receiptHash.slice(13, 16)}-8${receiptHash.slice(17, 20)}-${receiptHash.slice(20, 32)}`;
+
+    const identity = getHiveIdentity();
+    const now = new Date().toISOString();
+    const stationEventId = parseLedgerEventId(source.station_receipt_uri);
+
+    const receipt = {
+      id: receiptEventId,
+      space_id: getSpaceId(),
+      author_kind: "SYSTEM",
+      content: {
+        kind: "AUTODISCO_BROADCAST_RECORDED",
+        mode: "OBSERVED",
+        text: `Broadcast occurrence recorded for ${airing.station}.`,
+        source_kind: source.source_kind,
+        source_receipt_uri: source.source_receipt_uri,
+        station_receipt_uri: source.station_receipt_uri,
+        release_receipt_uri: source.release_receipt_uri,
+        source_audio_sha256: source.audio_sha256,
+        audio_sha256: airing.aired_audio_sha256,
+        inherited_permissions: source.permissions,
+        provider: source.provider,
+        airing,
+        broadcast_status: "BROADCAST_RECORDED",
+        endorsement_status: "NOT_INFERRED",
+        authority_note: "This receipt records an owner-declared actual airing occurrence. It does not imply endorsement by the performer, station, show, or provider and does not mutate source permissions."
+      },
+      metadata: {
+        node_id: identity.nodeId,
+        node_name: identity.nodeName,
+        node_role: identity.nodeRole,
+        origin_node: "AUTODISCO_BROADCAST_RECEIPT",
+        trace_id: sourceEvent?.metadata?.trace_id || generateUUID(),
+        hop: typeof sourceEvent?.metadata?.hop === "number" ? sourceEvent.metadata.hop + 1 : 1,
+        parent_event_id: sourceEventId,
+        station_parent_event_id: stationEventId,
+        release_parent_event_id: releaseEventId,
+        created_at: now,
+        tao_version: "1.0.0",
+        source: "autodisco_broadcast_receipt",
+        mode: "OBSERVED",
+        broadcast_receipt_version: BROADCAST_RECEIPT_VERSION
+      },
+      created_at: now
+    };
+
+    const { error: insertError } = await supabase.from("events").insert(receipt);
+
+    if (insertError?.code === "23505") {
+      const { data: existing, error: existingError } = await supabase
+        .from("events")
+        .select("*")
+        .eq("space_id", getSpaceId())
+        .eq("id", receiptEventId)
+        .maybeSingle();
+
+      if (existingError) throw existingError;
+      if (!existing || existing?.content?.kind !== "AUTODISCO_BROADCAST_RECORDED") {
+        throw insertError;
+      }
+
+      res.json({
+        state: "BROADCAST_RECORDED",
+        receiptUri: `ledger://events/${receiptEventId}`,
+        broadcast: existing.content,
+        replayedExistingReceipt: true
+      });
+      return;
+    }
+
+    if (insertError) throw insertError;
+
+    res.json({
+      state: "BROADCAST_RECORDED",
+      receiptUri: `ledger://events/${receiptEventId}`,
+      broadcast: receipt.content,
+      replayedExistingReceipt: false
+    });
+  } catch (err: any) {
+    console.error("Error recording broadcast occurrence:", err);
+    res.status(500).json({ error: err.message || "Failed to record broadcast occurrence." });
   }
 });
 
