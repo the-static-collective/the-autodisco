@@ -3277,13 +3277,16 @@ app.post("/api/listener-return/capture", requireOwner, async (req: Request, res:
 
     const packet = validation.packet;
     const receiptHash = createHash("sha256")
-      .update([
+      .update(JSON.stringify({
         broadcastEventId,
-        packet.listener.label,
-        packet.response.kind,
-        packet.response.kind === "TEXT" ? packet.response.text : packet.response.artifact_sha256,
-        packet.captured_at,
-      ].join(":"))
+        listenerLabel: packet.listener.label,
+        responseKind: packet.response.kind,
+        responseValue:
+          packet.response.kind === "TEXT"
+            ? packet.response.text
+            : packet.response.artifact_sha256,
+        capturedAt: packet.captured_at,
+      }))
       .digest("hex");
     const receiptEventId =
       `${receiptHash.slice(0, 8)}-${receiptHash.slice(8, 12)}-4${receiptHash.slice(13, 16)}-8${receiptHash.slice(17, 20)}-${receiptHash.slice(20, 32)}`;
