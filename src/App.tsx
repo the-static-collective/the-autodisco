@@ -14,6 +14,7 @@ import DaughterRitualView from "./components/DaughterRitualView";
 import PolyphonicPorch from "./components/PolyphonicPorch";
 import QuantumYarnExplorer from "./components/QuantumYarnExplorer";
 import ReleaseGateView from "./components/ReleaseGateView";
+import StationInboxView from "./components/StationInboxView";
 import { getSupabaseClient, ownerFetch } from "./lib/supabaseClient";
 import { 
   Layers, 
@@ -76,7 +77,7 @@ export default function App() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
+  const [activeTab, setActiveTab] = useState<"chronology" | "motifs" | "branches" | "porch" | "release_gate" | "station_inbox" | "instructions" | "backup" | "suno" | "flower" | "ritual" | "porch_synth" | "quantum_yarn">("porch");
   const [selectedMotif, setSelectedMotif] = useState<Motif | null>(null);
   const [chatTelemetry, setChatTelemetry] = useState<any>(null);
 
@@ -873,6 +874,18 @@ export default function App() {
               Release Gate
             </button>
             <button
+              onClick={() => setActiveTab("station_inbox")}
+              id="tab-station-inbox"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
+                activeTab === "station_inbox"
+                  ? "bg-[#141414] text-[#E4E3E0] border-[#141414]"
+                  : "bg-white text-[#141414] border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+              }`}
+            >
+              <Radio className="h-3.5 w-3.5" />
+              Station Inbox
+            </button>
+            <button
               onClick={() => setActiveTab("flower")}
               id="tab-flower"
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase border cursor-pointer transition-all ${
@@ -1039,6 +1052,10 @@ export default function App() {
 
             {activeTab === "release_gate" && (
               <ReleaseGateView />
+            )}
+
+            {activeTab === "station_inbox" && (
+              <StationInboxView />
             )}
 
             {activeTab === "flower" && (
