@@ -13,10 +13,11 @@
     "test:station-packet": "tsx scripts/station-packet-selftest.ts",
     "test:pair-listen": "tsx scripts/pair-listen-selftest.ts",
     "test:exchange": "tsx scripts/exchange-selftest.ts",
-    "test:voice-render": "tsx scripts/voice-render-selftest.ts"
+    "test:voice-render": "tsx scripts/voice-render-selftest.ts",
+    "test:voice-provider": "tsx scripts/voice-provider-selftest.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@google/genai": "^2.24.0",
     "@supabase/supabase-js": "^2.110.7",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
