@@ -10,7 +10,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:release-gate": "tsx scripts/release-gate-selftest.ts",
-    "test:station-packet": "tsx scripts/station-packet-selftest.ts"
+    "test:station-packet": "tsx scripts/station-packet-selftest.ts",
+    "test:pair-listen": "tsx scripts/pair-listen-selftest.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
